@@ -1,6 +1,6 @@
 # PIDM - Python Internet Download Manager
 
-![PIDM Banner](https://your-image-link-here) <!-- Optional banner -->
+<img src="screenshots/pidm.png" alt="PIDM logo" width="128" height="128">
 
 PIDM is a powerful and modern internet download manager written in Python using PySide6 (Qt). It features advanced queue handling, browser extension integration, metadata prefetching, resume support, and a clean, theme-aware GUI.
 
@@ -24,9 +24,8 @@ PIDM is a powerful and modern internet download manager written in Python using 
 
 ## 📷 Screenshots
 
-<!-- Add your images here -->
-![Main Window](assets/screenshots/main.png)
-![New Download Dialog](assets/screenshots/dialog.png)
+![Main Window](screenshots/Screenshot-1.png)
+![New Download Dialog](screenshots/Screenshot-2.png)
 
 ---
 
@@ -34,7 +33,7 @@ PIDM is a powerful and modern internet download manager written in Python using 
 
 ### 🔽 Download Executable (Windows)
 
-> Download the latest release from the [Releases](https://github.com/yourusername/pidm-download-manager/releases) page.
+> Download the latest release from the [Releases](https://github.com/saeedmasoudie/PIDM/releases) page.
 
 ### ⚙️ Run From Source
 
@@ -83,7 +82,7 @@ PIDM supports multiple languages. You can contribute via `.ts` and `.qm` files u
 
 ## 🛡️ License
 
-MIT License © [Your Name](https://github.com/yourusername)
+MIT License © [Saeed Masoudi](https://github.com/saeedmasoudie)
 
 ---
 
