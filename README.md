@@ -18,7 +18,7 @@ PIDM is a powerful and modern internet download manager written in Python using 
 - 🌍 Multilingual support (English, فارسی, ...)
 - 🔐 Authentication handling (Basic/Digest)
 - 📡 Global & per-download speed limiter
-- 🔌 Native messaging support for browser triggers
+- 🔌 Proxy messaging support for browser triggers
 
 ---
 
