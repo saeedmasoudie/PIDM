@@ -2,9 +2,10 @@ import logging
 import mimetypes
 import platform
 import re
-import struct
+import threading
 import time
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse, unquote
 
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon
 )
 from PySide6.QtCore import Qt, QSize, QTranslator, QLocale, QLibraryInfo, QCoreApplication, QTimer, QDateTime, Slot, \
-    QFileInfo, QUrl, QPoint, QTime, QDate, QProcess, QThread, Signal, QEventLoop
+    QFileInfo, QUrl, QPoint, QTime, QDate, QProcess, QThread, Signal, QEventLoop, QObject
 import sys
 import os
 import json
@@ -914,31 +915,71 @@ class UpdateCheckThread(QThread):
             pass
 
 
-class NativeMessageThread(QThread):
-    url_received = Signal(str)
+class ProxyServer(QObject):
+    link_received = Signal(str)
 
-    def run(self):
-        while True:
+    def __init__(self, start_port=9999, max_tries=10):
+        super().__init__()
+        self.server = None
+        self.thread = None
+        self.port = None
+        self._start_server(start_port, max_tries)
+
+    def _start_server(self, start_port, max_tries):
+        for port in range(start_port, start_port + max_tries):
             try:
-                raw_length = sys.stdin.buffer.read(4)
-                if not raw_length or len(raw_length) < 4:
-                    break
+                handler = self._make_handler()
+                self.server = HTTPServer(("127.0.0.1", port), handler)
+                self.port = port
+                self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                self.thread.start()
+                print(f"[ProxyServer] Listening on http://127.0.0.1:{port}")
+                return
+            except OSError:
+                continue
+        print("[ProxyServer] Failed to bind to any port.")
 
-                msg_len = struct.unpack("=I", raw_length)[0]
-                if msg_len <= 0:
-                    break
+    def _make_handler(self):
+        outer = self
 
-                msg_data = sys.stdin.buffer.read(msg_len).decode("utf-8")
-                message = json.loads(msg_data)
+        class Handler(BaseHTTPRequestHandler):
+            def _set_headers(self, status=200):
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")  # Allow CORS
+                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
 
-                url = message.get("url")
-                if url:
-                    self.url_received.emit(url)
+            def do_OPTIONS(self):
+                self._set_headers()
 
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                break
+            def do_POST(self):
+                if self.path != "/api/download":
+                    self._set_headers(404)
+                    return
+
+                content_length = int(self.headers.get("Content-Length", 0))
+                raw_data = self.rfile.read(content_length)
+
+                try:
+                    data = json.loads(raw_data)
+                    url = data.get("url")
+                    if url:
+                        outer.link_received.emit(url)
+                        self._set_headers()
+                        self.wfile.write(b'{"status":"ok"}')
+                    else:
+                        self._set_headers(400)
+                        self.wfile.write(b'{"error":"missing url"}')
+                except Exception as e:
+                    self._set_headers(500)
+                    self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+
+            def log_message(self, format, *args):
+                return  # Suppress log output
+
+        return Handler
 
 
 class CredentialDialog(QDialog):
@@ -2048,7 +2089,7 @@ class PIDM(QMainWindow):
         self.setWindowTitle(self.tr("Python Internet Download Manager (PIDM)"))
         self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
         self.resize(1200, 700)
-        self.app_version = "1.0.0"
+        self.app_version = "1.0.1"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
         self.is_quitting = False
@@ -2077,10 +2118,6 @@ class PIDM(QMainWindow):
         self.scheduler_thread.start_queue_signal.connect(self.handle_start_queue_by_id)
         self.scheduler_thread.stop_queue_signal.connect(self.handle_stop_queue_by_id)
         self.scheduler_thread.start()
-
-        self.native_msg_thread = NativeMessageThread()
-        self.native_msg_thread.url_received.connect(self.handle_external_url)
-        self.native_msg_thread.start()
 
         self.setup_tray_icon()
 
@@ -3427,75 +3464,7 @@ def colored_icon_from_svg(path: str, color: QColor, size: QSize = QSize(24, 24))
     return QIcon(pixmap)
 
 
-def handle_native_message_once():
-    try:
-        raw_length = sys.stdin.buffer.read(4)
-        if not raw_length or len(raw_length) < 4:
-            return
-
-        msg_len = struct.unpack("=I", raw_length)[0]
-        msg_data = sys.stdin.buffer.read(msg_len).decode("utf-8")
-
-        # Try connecting to running instance
-        socket = QLocalSocket()
-        socket.connectToServer("PIDM_INSTANCE_LOCK")
-        if socket.waitForConnected(100):
-            socket.write(msg_data.encode("utf-8"))
-            socket.flush()
-            socket.waitForBytesWritten(100)
-            socket.disconnectFromServer()
-            return
-
-        # Fallback if no instance running
-        app = QApplication([])
-        message = json.loads(msg_data)
-        settings = SettingsManager()
-        db = DatabaseManager()
-
-        if "urls" in message:
-            dialog = NewBatchDownloadDialog(settings, db, message["urls"])
-            dialog.setWindowFlags(Qt.Tool)
-            dialog.setAttribute(Qt.WA_ShowWithoutActivating)
-            dialog.exec()
-            return app.quit()
-
-        if "url" in message:
-            url = message["url"]
-            dialog = NewDownloadDialog(settings, db)
-
-            # Initial fallback metadata
-            filename = guess_filename_from_url(url)
-            basic_metadata = {
-                "filename": filename,
-                "content_length": 0,
-                "content_type": "application/octet-stream",
-                "final_url": url
-            }
-
-            dialog.set_initial_data(url, basic_metadata, None)
-            dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
-            dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
-
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-
-            # Async fetch
-            fetcher = MetadataFetcher(url)
-            fetcher.result.connect(lambda meta: dialog.update_metadata_fields(meta))
-            QTimer.singleShot(100, lambda: fetcher.start())
-
-            QApplication.processEvents()  # Allow timer/fetcher to kick in
-            dialog.exec()
-            return app.quit()
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        logger.error(f"[NativeMsg] Error: {e}")
-
-
-def setup_single_instance(on_message_callback: callable) -> bool:
+def setup_single_instance() -> bool:
     socket = QLocalSocket()
     socket.connectToServer("PIDM_INSTANCE_LOCK")
     if socket.waitForConnected(100):
@@ -3503,73 +3472,41 @@ def setup_single_instance(on_message_callback: callable) -> bool:
 
     server = QLocalServer()
     try:
-        QLocalServer.removeServer("PIDM_INSTANCE_LOCK")  # Cleanup stale
+        QLocalServer.removeServer("PIDM_INSTANCE_LOCK")
         if not server.listen("PIDM_INSTANCE_LOCK"):
             return False
-
-        def handle_new_connection():
-            client = server.nextPendingConnection()
-            if client and client.waitForReadyRead(500):
-                message = client.readAll().data().decode()
-                on_message_callback(message)
-            client.disconnectFromServer()
-
-        server.newConnection.connect(handle_new_connection)
         return True
     except Exception as e:
-        logger.error(f"[SingleInstance] Error: {e}")
+        print(f"[SingleInstance] Error: {e}")
         return False
 
-def handle_incoming_message(message: str, settings: SettingsManager, db: DatabaseManager):
-    try:
-        payload = json.loads(message)
-        if not isinstance(payload, dict):
-            return
 
-        # SINGLE URL
-        if "url" in payload:
-            url = payload["url"]
-            dialog = NewDownloadDialog(settings, db)
-            apply_standalone_style(dialog, settings)
+def show_download_dialog(url: str, settings, db):
+    dialog = NewDownloadDialog(settings, db)
+    filename = guess_filename_from_url(url)
+    initial_metadata = {
+        "filename": filename,
+        "content_length": 0,
+        "content_type": "application/octet-stream",
+        "final_url": url
+    }
 
-            filename = guess_filename_from_url(url)
-            initial_metadata = {
-                "filename": filename,
-                "content_length": 0,
-                "content_type": "application/octet-stream",
-                "final_url": url
-            }
+    dialog.set_initial_data(url, initial_metadata, None)
+    dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
+    dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
 
-            dialog.set_initial_data(url, initial_metadata, None)
-            dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
-            dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
 
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
+    # Async fetch
+    fetcher = MetadataFetcher(url)
+    fetcher.result.connect(lambda meta: dialog.update_metadata_fields(meta))
+    QTimer.singleShot(100, lambda: fetcher.start())
 
-            # Fetch metadata in background
-            fetcher = MetadataFetcher(url)
-            fetcher.result.connect(lambda meta: dialog.update_metadata_fields(meta))
-            QTimer.singleShot(100, lambda: fetcher.start())
+    QApplication.processEvents()
+    dialog.exec()
 
-            QApplication.processEvents()
-            dialog.exec()
-
-        # MULTIPLE URLS
-        elif "urls" in payload:
-            dialog = NewBatchDownloadDialog(settings, db, payload["urls"])
-            apply_standalone_style(dialog, settings)
-            dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
-            dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            QApplication.processEvents()
-            dialog.exec()
-
-    except Exception as e:
-        logger.error(f"[SingleInstance] Failed to handle message: {e}")
 
 
 def apply_standalone_style(widget, settings):
@@ -3603,10 +3540,6 @@ def guess_filename_from_url(url: str) -> str:
 
 
 if __name__ == "__main__":
-    if is_native_messaging():
-        handle_native_message_once()
-        sys.exit(0)
-
     app = QApplication(sys.argv)
     settings = SettingsManager()
     custom_font = load_custom_font()
@@ -3631,13 +3564,14 @@ if __name__ == "__main__":
     DownloadWorker.set_global_speed_limit(settings.get("global_speed_limit_kbps", 0))
 
     win = PIDM()
-    settings = win.settings
     db = win.db
 
-    if not setup_single_instance(lambda msg: handle_incoming_message(msg, settings, db)):
+    if not setup_single_instance():
         sys.exit(0)
+
+    # Start the local proxy server and hook to download dialog
+    proxy = ProxyServer()
+    proxy.link_received.connect(lambda url: show_download_dialog(url, settings, db))
 
     win.show()
     sys.exit(app.exec())
-
-
