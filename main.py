@@ -414,7 +414,7 @@ class DownloadWorker(QThread):
     total_size_known = Signal(int)
     global_speed_limit_bps = None
 
-    def __init__(self, download_id: int, db_manager: DatabaseManager, url: str, save_path: str,
+    def __init__(self, download_id: int, db_manager, url: str, save_path: str,
                  initial_downloaded_bytes: int = 0, total_file_size: int = 0, auth=None, parent=None):
         super().__init__(parent)
         self.download_id = download_id
@@ -425,9 +425,10 @@ class DownloadWorker(QThread):
         self._last_db_write_time = time.time()
         self.resume_helper = ResumeFileHandler(self.save_path)
 
+        self.httpx_response = None
+        self.httpx_client = None
         self._total_size = total_file_size
         self._downloaded_bytes = initial_downloaded_bytes
-
         self._is_paused = False
         self._is_cancelled = False
         self._is_running = False
@@ -454,30 +455,62 @@ class DownloadWorker(QThread):
             self.db.update_status_and_progress_on_pause(
                 self.download_id, STATUS_PAUSED, progress_percent, self._downloaded_bytes
             )
+            logger.info(f"Download {self.download_id} paused.")
 
     def resume(self):
         if self._is_running and self._is_paused:
             self._is_paused = False
             self._last_timestamp = time.time()
             self._last_downloaded_bytes_for_speed_calc = self._downloaded_bytes
+            self._last_timestamp_for_limit = time.time()
             self.status_changed.emit(STATUS_RESUMING)
             self.db.update_status(self.download_id, STATUS_DOWNLOADING)
+            logger.info(f"Download {self.download_id} resumed.")
 
     def cancel(self):
         self._is_cancelled = True
+        logger.info(f"DownloadWorker {self.download_id} cancel called.")
+
+        # Attempt to close network resources if they exist
+        if self.httpx_response:
+            try:
+                self.httpx_response.close()
+                logger.info(f"DownloadWorker {self.download_id} closed httpx response object during cancel.")
+            except Exception as e:
+                logger.warning(f"DownloadWorker {self.download_id} error closing httpx response during cancel: {e}")
+
+        if self.httpx_client:
+            try:
+                self.httpx_client.close()
+                logger.info(f"DownloadWorker {self.download_id} closed httpx client during cancel.")
+            except Exception as e:
+                logger.warning(f"DownloadWorker {self.download_id} error closing httpx client during cancel: {e}")
+
         if self.isRunning():
             self.quit()
-            if not self.wait(2000):
-                logger.warning(f"DownloadWorker {self.download_id} did not terminate gracefully.")
+            if not self.wait(3000):
+                logger.warning(
+                    f"DownloadWorker {self.download_id} did not terminate gracefully after quit(). Terminating.")
                 self.terminate()
+            else:
+                logger.info(f"DownloadWorker {self.download_id} quit gracefully.")
+        else:
+            logger.info(
+                f"DownloadWorker {self.download_id} was not running (or already finished) when cancel was called.")
 
-        if self.save_path.exists():
+
+        download_entry = self.db.get_download_by_id(self.download_id)
+        if self.save_path.exists() and (not download_entry or download_entry.get('status') != STATUS_COMPLETE):
             try:
                 self.save_path.unlink(missing_ok=True)
-                logger.info(f"Partial file {self.save_path} deleted on cancel.")
+                logger.info(f"Partial file {self.save_path} for {self.download_id} deleted on cancel.")
             except OSError as e:
-                logger.error(f"Error deleting partial file {self.save_path} on cancel: {e}")
+                logger.error(f"Error deleting partial file {self.save_path} for {self.download_id} on cancel: {e}")
+
         self.resume_helper.delete()
+
+        self.db.update_status(self.download_id, STATUS_CANCELLED)
+        self.status_changed.emit(STATUS_CANCELLED)
 
     def _calculate_speed_and_eta(self):
         current_time = time.time()
@@ -498,15 +531,15 @@ class DownloadWorker(QThread):
             else:
                 self._eta_seconds = float('inf')
 
-        speed_bps = self._speed_bps
-        if speed_bps >= 1024 ** 3:
-            speed_str = f"{speed_bps / (1024 ** 3):.2f} GB/s"
-        elif speed_bps >= 1024 ** 2:
-            speed_str = f"{speed_bps / (1024 ** 2):.2f} MB/s"
-        elif speed_bps >= 1024:
-            speed_str = f"{speed_bps / 1024:.2f} KB/s"
+        speed_bps_val = self._speed_bps
+        if speed_bps_val >= 1024 ** 3:
+            speed_str = f"{speed_bps_val / (1024 ** 3):.2f} GB/s"
+        elif speed_bps_val >= 1024 ** 2:
+            speed_str = f"{speed_bps_val / (1024 ** 2):.2f} MB/s"
+        elif speed_bps_val >= 1024:
+            speed_str = f"{speed_bps_val / 1024:.2f} KB/s"
         else:
-            speed_str = f"{speed_bps:.0f} B/s"
+            speed_str = f"{speed_bps_val:.0f} B/s"
 
         if self._eta_seconds == float('inf') or self._total_size == 0:
             eta_str = "--"
@@ -520,15 +553,25 @@ class DownloadWorker(QThread):
 
     def run(self):
         self._is_running = True
+
+        if self._is_cancelled:
+            logger.info(f"Download {self.download_id} run() called but already cancelled.")
+            self.status_changed.emit(STATUS_CANCELLED)
+            self._is_running = False
+            return
+
         self.status_changed.emit(STATUS_CONNECTING)
         self.db.update_status(self.download_id, STATUS_CONNECTING)
 
-        headers = {"User-Agent": "PIDM/1.0"}
+        base_headers = {
+            "User-Agent": "PIDM/1.0 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        current_headers = base_headers.copy()
         file_mode = "wb"
 
         if self._downloaded_bytes > 0:
             if not self.save_path.exists():
-                logger.warning(f"[Resume] File missing: {self.save_path}, restarting download.")
+                logger.warning(f"[Resume] File {self.save_path} missing for {self.download_id}, restarting download.")
                 self._downloaded_bytes = 0
                 self.db.update_download_progress_details(self.download_id, 0, 0)
             else:
@@ -541,33 +584,49 @@ class DownloadWorker(QThread):
                         self._total_size = resume_data_from_file.get("total_size")
                         self.total_size_known.emit(self._total_size)
                         self.db.update_total_size(self.download_id, self._total_size)
-
-                    logger.info(f"[Resume] Using .resume file: {self._downloaded_bytes} bytes downloaded.")
+                    logger.info(f"[Resume] Using .resume file: {self._downloaded_bytes} bytes for {self.download_id}.")
                     if abs(current_file_size - self._downloaded_bytes) > 1024 * 1024:
-                        logger.warning(f"[Resume] Large size mismatch between .resume ({self._downloaded_bytes}) and actual file ({current_file_size}). Trusting .resume file.")
-
+                        logger.warning(
+                            f"[Resume] Large size mismatch (.resume: {self._downloaded_bytes}, file: {current_file_size}) for {self.download_id}. Trusting .resume.")
                 elif abs(current_file_size - self._downloaded_bytes) > 1024 * 1024:
                     logger.warning(
-                        f"[Resume] File size ({current_file_size}) significantly different from DB's downloaded_bytes ({self._downloaded_bytes}). Restarting.")
+                        f"[Resume] File size ({current_file_size}) vs DB ({self._downloaded_bytes}) mismatch for {self.download_id}. Restarting.")
                     self._downloaded_bytes = 0
                     self.db.update_download_progress_details(self.download_id, 0, 0)
                 elif current_file_size < self._downloaded_bytes:
                     logger.warning(
-                        f"[Resume] File size ({current_file_size}) is smaller than DB's downloaded_bytes ({self._downloaded_bytes}). Using file size.")
+                        f"[Resume] File size ({current_file_size}) < DB ({self._downloaded_bytes}) for {self.download_id}. Using file size.")
                     self._downloaded_bytes = current_file_size
+
                 if self._downloaded_bytes > 0:
-                    headers["Range"] = f"bytes={self._downloaded_bytes}-"
+                    current_headers["Range"] = f"bytes={self._downloaded_bytes}-"
                     file_mode = "ab"
-                    self.status_changed.emit(STATUS_RESUMING)
-                    self.db.update_status(self.download_id, STATUS_RESUMING)
+                    if not self._is_cancelled:
+                        self.status_changed.emit(STATUS_RESUMING)
+                        self.db.update_status(self.download_id, STATUS_RESUMING)
                 else:
                     file_mode = "wb"
+
+        if self._is_cancelled:
+            logger.info(f"Download {self.download_id} cancelled before starting network stream.")
+            self.status_changed.emit(STATUS_CANCELLED)
+            self._is_running = False
+            return
 
         try:
             self.save_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with httpx.stream("GET", self.url, headers=headers, auth=self.auth, timeout=30.0,
-                              follow_redirects=True) as response:
+            timeout_config = httpx.Timeout(30.0, connect=15.0)
+            self.httpx_client = httpx.Client(auth=self.auth, timeout=timeout_config, follow_redirects=True)
+
+            with self.httpx_client.stream("GET", self.url, headers=current_headers) as response:
+                self.httpx_response = response
+
+                if self._is_cancelled:
+                    logger.info(f"Download {self.download_id} cancelled after stream opened, before reading.")
+                    self.status_changed.emit(STATUS_CANCELLED)
+                    return
+
                 response.raise_for_status()
 
                 new_total_size_from_server = 0
@@ -578,13 +637,16 @@ class DownloadWorker(QThread):
                     try:
                         new_total_size_from_server = int(content_range_header.split('/')[-1])
                     except ValueError:
-                        pass
+                        logger.warning(
+                            f"Could not parse Content-Range total for {self.download_id}: {content_range_header}")
                 elif content_length_header:
                     try:
                         server_reported_len = int(content_length_header)
-                        new_total_size_from_server = self._downloaded_bytes + server_reported_len if file_mode == "ab" else server_reported_len
+                        new_total_size_from_server = (
+                                    self._downloaded_bytes + server_reported_len) if file_mode == "ab" else server_reported_len
                     except ValueError:
-                        pass
+                        logger.warning(
+                            f"Could not parse Content-Length for {self.download_id}: {content_length_header}")
 
                 if new_total_size_from_server > 0 and (
                         self._total_size == 0 or self._total_size != new_total_size_from_server):
@@ -592,47 +654,60 @@ class DownloadWorker(QThread):
                     self.total_size_known.emit(self._total_size)
                     self.db.update_total_size(self.download_id, self._total_size)
                 elif self._total_size == 0:
-                    self.status_changed.emit(self.tr("Warning: Total file size unknown. Progress may be inaccurate."))
+                    if not self._is_cancelled: self.status_changed.emit(
+                        self.tr("Warning: Total file size unknown. Progress may be inaccurate."))
 
-                self.status_changed.emit(STATUS_DOWNLOADING)
-                self.db.update_status(self.download_id, STATUS_DOWNLOADING)
+                if self._is_cancelled:
+                    logger.info(f"Download {self.download_id} cancelled after header processing.")
+                    self.status_changed.emit(STATUS_CANCELLED)
+                    return
 
-                chunk_size = 1024 * 64
+                if not self._is_cancelled:
+                    self.status_changed.emit(STATUS_DOWNLOADING)
+                    self.db.update_status(self.download_id, STATUS_DOWNLOADING)
 
+                chunk_size = 1024 * 64  # 64KB
                 with open(self.save_path, file_mode) as file:
                     for chunk in response.iter_bytes(chunk_size=chunk_size):
-                        if self._is_cancelled: break
+                        if self._is_cancelled:
+                            logger.info(f"Download {self.download_id} cancelled during chunk iteration.")
+                            break
+
                         while self._is_paused:
-                            if self._is_cancelled: break
+                            if self._is_cancelled:
+                                logger.info(f"Download {self.download_id} cancelled while paused.")
+                                break
                             self.msleep(200)
                         if self._is_cancelled: break
 
                         file.write(chunk)
                         self._downloaded_bytes += len(chunk)
 
+                        # Speed Limit Logic
                         if self.__class__.global_speed_limit_bps and self.__class__.global_speed_limit_bps > 0:
                             current_speed_calc_time = time.time()
                             time_for_chunk_at_limit = len(chunk) / self.__class__.global_speed_limit_bps
                             actual_time_for_chunk = current_speed_calc_time - self._last_timestamp_for_limit
-
-                            if actual_time_for_chunk < time_for_chunk_at_limit and actual_time_for_chunk > 0:
+                            if actual_time_for_chunk < time_for_chunk_at_limit:
                                 sleep_duration_ms = int((time_for_chunk_at_limit - actual_time_for_chunk) * 1000)
                                 if sleep_duration_ms > 0: self.msleep(sleep_duration_ms)
                             self._last_timestamp_for_limit = time.time()
 
-                        progress_percent = int(
-                            (self._downloaded_bytes / self._total_size) * 100) if self._total_size > 0 else -1
+                        progress_percent = int((self._downloaded_bytes / self._total_size) * 100) if self._total_size > 0 else -1
                         speed_str, eta_str = self._calculate_speed_and_eta()
-                        self.progress_updated.emit(progress_percent, speed_str, eta_str, self._downloaded_bytes,
-                                                   self._total_size)
+                        if not self._is_cancelled:
+                            self.progress_updated.emit(progress_percent, speed_str, eta_str, self._downloaded_bytes,
+                                                       self._total_size)
 
                         now = time.time()
                         if now - self._last_db_write_time >= self._db_write_interval:
-                            self.db.update_download_progress_details(self.download_id, progress_percent,
+                            self.db.update_download_progress_details(self.download_id, max(0, progress_percent),
                                                                      self._downloaded_bytes)
                             self._last_db_write_time = now
                             if self._total_size > 0:
-                                self.resume_helper.write(self._downloaded_bytes, self._total_size, self.url)
+                                if not self._is_cancelled: self.resume_helper.write(self._downloaded_bytes,
+                                                                                    self._total_size, self.url)
+
                 if self._is_cancelled:
                     self.status_changed.emit(STATUS_CANCELLED)
                 elif self._total_size > 0 and self._downloaded_bytes < self._total_size:
@@ -642,34 +717,73 @@ class DownloadWorker(QThread):
                     self.status_changed.emit(STATUS_COMPLETE)
                     self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
                     self.finished_successfully.emit(str(self.save_path))
-                elif self._downloaded_bytes >= self._total_size:
+                elif self._downloaded_bytes >= self._total_size and self._total_size > 0:
                     self.status_changed.emit(STATUS_COMPLETE)
                     self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
                     self.finished_successfully.emit(str(self.save_path))
 
         except httpx.HTTPStatusError as e:
-            err_msg = f"HTTP Error: {e.response.status_code}"
-            logger.error(f"Download {self.download_id} HTTP Error: {e.response.status_code} - {e.response.text[:200]}")
-            self.status_changed.emit(err_msg)
-            self.db.update_status(self.download_id, f"Error HTTP {e.response.status_code}")
+            err_msg_for_ui = f"HTTP Error: {e.response.status_code}"
+            response_text_snippet = "[Response body not read or unavailable]"
+            try:
+                e.response.read()
+                response_text_snippet = e.response.text[:200]
+            except httpx.ResponseNotRead:
+                logger.warning(
+                    f"Download {self.download_id} - Still ResponseNotRead after explicit read() for HTTPStatusError. Body might be empty or stream closed.")
+            except httpx.StreamConsumed:
+                logger.warning(f"Download {self.download_id} - StreamConsumed when trying to read error response body.")
+                if hasattr(e.response, '_content') and e.response._content is not None:
+                    try:
+                        response_text_snippet = e.response.text[:200]
+                    except Exception:
+                        pass
+            except Exception as read_exc:
+                logger.warning(
+                    f"Download {self.download_id} - Error reading response body for HTTPStatusError: {type(read_exc).__name__} - {read_exc}")
+                response_text_snippet = f"[Error reading response body: {type(read_exc).__name__}]"
+            logger.error(
+                f"Download {self.download_id} HTTP Error: {e.response.status_code} for URL {e.request.url} - Snippet: {response_text_snippet}")
+            if not self._is_cancelled:
+                self.status_changed.emit(err_msg_for_ui)
+                self.db.update_status(self.download_id, f"Error HTTP {e.response.status_code}")
         except httpx.RequestError as e:
             err_msg = f"Network Error: {type(e).__name__}"
-            logger.error(f"Download {self.download_id} Network Error: {e}")
-            self.status_changed.emit(err_msg)
-            self.db.update_status(self.download_id, "Error (Network)")
+            logger.error(f"Download {self.download_id} Network Error: {e} for URL {self.url}")
+            if not self._is_cancelled:
+                self.status_changed.emit(err_msg)
+                self.db.update_status(self.download_id, "Error (Network)")
         except IOError as e:
             err_msg = f"File Error: {e.strerror}"
             logger.error(f"Download {self.download_id} File Error: {e}")
-            self.status_changed.emit(err_msg)
-            self.db.update_status(self.download_id, "Error (File)")
+            if not self._is_cancelled:
+                self.status_changed.emit(err_msg)
+                self.db.update_status(self.download_id, "Error (File)")
         except Exception as e:
             err_msg = f"Error: {type(e).__name__}"
-            logger.error(f"Download {self.download_id} Generic Error: {e}")
-            self.status_changed.emit(err_msg)
-            self.db.update_status(self.download_id, "Error (General)")
+            logger.error(f"Download {self.download_id} Generic Error: {e}", exc_info=True)
+            if not self._is_cancelled:
+                self.status_changed.emit(err_msg)
+                self.db.update_status(self.download_id, "Error (General)")
         finally:
             self._is_running = False
-            if not self._is_cancelled:
+
+            if self.httpx_response:
+                try:
+                    self.httpx_response.close()
+                except Exception as e_close:
+                    logger.debug(f"Exception closing httpx_response for {self.download_id}: {e_close}")
+                self.httpx_response = None
+            if self.httpx_client:
+                try:
+                    self.httpx_client.close()
+                except Exception as e_close:
+                    logger.debug(f"Exception closing httpx_client for {self.download_id}: {e_close}")
+                self.httpx_client = None
+
+            current_status_in_db = self.db.get_download_by_id(self.download_id).get(
+                'status') if self.db.get_download_by_id(self.download_id) else None
+            if self._is_cancelled or current_status_in_db == STATUS_COMPLETE:
                 self.resume_helper.delete()
 
 
