@@ -1172,7 +1172,7 @@ class UrlInputDialog(QDialog):
 
         self.url = url_text
 
-        # Construct minimal metadata
+        # Basic metadata guess — actual MetadataFetcher runs in MainWindow
         filename_from_url = Path(QUrl(self.url).path()).name or "unknown_file"
         self.metadata = {
             "content_length": 0,
@@ -1181,21 +1181,8 @@ class UrlInputDialog(QDialog):
             "final_url": self.url
         }
 
-        self.open_download_dialog()
+        self.accept()  # Let the parent handle showing NewDownloadDialog
 
-    def open_download_dialog(self):
-        dialog = NewDownloadDialog(SettingsManager(), DatabaseManager(), self)
-        dialog.set_initial_data(self.url, self.metadata, self.auth_tuple)
-
-        # Start background fetch
-        self.fetcher_thread = MetadataFetcher(self.url, self.auth_tuple)
-        self.fetcher_thread.result.connect(lambda meta: dialog.update_metadata_fields(meta))
-        self.fetcher_thread.start()
-
-        if dialog.exec() == QDialog.Accepted:
-            self.accept()
-        else:
-            self.reject()
 
     def get_url_and_metadata(self):
         if self.metadata and "final_url" not in self.metadata:
@@ -1204,6 +1191,8 @@ class UrlInputDialog(QDialog):
 
 
 class NewDownloadDialog(QDialog):
+    download_added = Signal()
+
     def __init__(self, settings_manager: SettingsManager, database_manager: DatabaseManager, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Add New Download"))
@@ -1323,6 +1312,11 @@ class NewDownloadDialog(QDialog):
             if idx != -1:
                 self.queue_combo.setCurrentIndex(idx)
                 self.remember_queue_checkbox.setChecked(True)
+
+    def fetch_metadata_async(self, url: str, auth: tuple | None = None):
+        self._metadata_fetcher = MetadataFetcher(url, auth)
+        self._metadata_fetcher.result.connect(lambda meta: self.update_metadata_fields(meta))
+        QTimer.singleShot(100, lambda: self._metadata_fetcher.start())
 
     def update_metadata_fields(self, metadata: dict):
         self.fetched_metadata = metadata
@@ -1466,6 +1460,7 @@ class NewDownloadDialog(QDialog):
             QMessageBox.warning(self, self.tr("Duplicate Download"),
                                 self.tr("This download (URL and save path) already exists."))
             return
+        self.download_added.emit()
         super().accept()
 
     def _handle_download_now(self):
@@ -1481,6 +1476,7 @@ class NewDownloadDialog(QDialog):
             QMessageBox.warning(self, self.tr("Duplicate Download"),
                                 self.tr("This download (URL and save path) already exists."))
             return
+        self.download_added.emit()
         super().accept()
 
     def get_final_download_data(self) -> tuple[int | None, dict | None, tuple | None, bool, str | None]:
@@ -2598,61 +2594,62 @@ class PIDM(QMainWindow):
         self.on_category_tree_selection_changed(self.category_tree.currentItem(), None)
         self.update_action_buttons_state()
 
-    @Slot(str)
-    def handle_external_url(self, url: str):
-        fetcher = MetadataFetcher(url)
-        loop = QEventLoop()
-        result_holder = {}
-
-        def on_result(data):
-            result_holder['metadata'] = data
-            loop.quit()
-
-        def on_error(msg):
-            print(f"[NativeURL] Metadata error: {msg}")
-            result_holder['metadata'] = None
-            loop.quit()
-
-        def on_timeout():
-            print("[NativeURL] Metadata timeout.")
-            result_holder['metadata'] = None
-            loop.quit()
-
-        fetcher.result.connect(on_result)
-        fetcher.error.connect(on_error)
-        fetcher.timeout.connect(on_timeout)
-        fetcher.start()
-        loop.exec()
-
-        metadata = result_holder.get('metadata') or {
-            "filename": Path(url).name or "download",
-            "final_url": url,
-            "content_type": "application/octet-stream",
-            "content_length": 0
-        }
-
-        new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
-        new_dl_dialog.set_initial_data(url, metadata, auth=None)
-
-        if new_dl_dialog.exec() == QDialog.Accepted:
-            added_dl_id, db_payload, auth, start_now, accepted_how = new_dl_dialog.get_final_download_data()
-
-            if added_dl_id and db_payload:
-                self._add_download_to_table(db_payload)
-
-                if start_now:
-                    self._start_download_worker(
-                        added_dl_id,
-                        db_payload["url"],
-                        db_payload["save_path"],
-                        0,
-                        db_payload["total_size"],
-                        auth
-                    )
-                elif accepted_how == "now" and db_payload.get("queue_id") is not None:
-                    self.try_auto_start_from_queue(db_payload["queue_id"])
-
-        self.update_action_buttons_state()
+    # Not using it for now
+    # @Slot(str)
+    # def handle_external_url(self, url: str):
+    #     fetcher = MetadataFetcher(url)
+    #     loop = QEventLoop()
+    #     result_holder = {}
+    #
+    #     def on_result(data):
+    #         result_holder['metadata'] = data
+    #         loop.quit()
+    #
+    #     def on_error(msg):
+    #         print(f"[NativeURL] Metadata error: {msg}")
+    #         result_holder['metadata'] = None
+    #         loop.quit()
+    #
+    #     def on_timeout():
+    #         print("[NativeURL] Metadata timeout.")
+    #         result_holder['metadata'] = None
+    #         loop.quit()
+    #
+    #     fetcher.result.connect(on_result)
+    #     fetcher.error.connect(on_error)
+    #     fetcher.timeout.connect(on_timeout)
+    #     fetcher.start()
+    #     loop.exec()
+    #
+    #     metadata = result_holder.get('metadata') or {
+    #         "filename": Path(url).name or "download",
+    #         "final_url": url,
+    #         "content_type": "application/octet-stream",
+    #         "content_length": 0
+    #     }
+    #
+    #     new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
+    #     new_dl_dialog.set_initial_data(url, metadata, auth=None)
+    #
+    #     if new_dl_dialog.exec() == QDialog.Accepted:
+    #         added_dl_id, db_payload, auth, start_now, accepted_how = new_dl_dialog.get_final_download_data()
+    #
+    #         if added_dl_id and db_payload:
+    #             self._add_download_to_table(db_payload)
+    #
+    #             if start_now:
+    #                 self._start_download_worker(
+    #                     added_dl_id,
+    #                     db_payload["url"],
+    #                     db_payload["save_path"],
+    #                     0,
+    #                     db_payload["total_size"],
+    #                     auth
+    #                 )
+    #             elif accepted_how == "now" and db_payload.get("queue_id") is not None:
+    #                 self.try_auto_start_from_queue(db_payload["queue_id"])
+    #
+    #     self.update_action_buttons_state()
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def on_category_tree_selection_changed(self, current_item: QTreeWidgetItem, previous_item: QTreeWidgetItem):
@@ -2693,6 +2690,14 @@ class PIDM(QMainWindow):
             self._add_download_to_table(download_item)
 
         self.update_action_buttons_state()
+
+    def get_current_filter_item(self):
+        return self.category_tree.currentItem()
+
+    def refresh_download_table_with_current_filter(self):
+        current_item = self.get_current_filter_item()
+        if current_item:
+            self.on_category_tree_selection_changed(current_item, current_item)
 
     @Slot()
     def _get_selected_download_id(self) -> int | None:
@@ -2760,7 +2765,8 @@ class PIDM(QMainWindow):
     @Slot()
     def handle_new_download_dialog(self):
         url_dialog = UrlInputDialog(self)
-        if url_dialog.exec() != QDialog.Accepted: return
+        if url_dialog.exec() != QDialog.Accepted:
+            return
 
         url, metadata, auth_tuple = url_dialog.get_url_and_metadata()
         if not url or not metadata:
@@ -2768,7 +2774,9 @@ class PIDM(QMainWindow):
             return
 
         new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
+        new_dl_dialog.download_added.connect(self.refresh_download_table_with_current_filter)
         new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
+        new_dl_dialog.fetch_metadata_async(url, auth_tuple)  # ✅ background fetch inside the dialog
 
         if new_dl_dialog.exec() == QDialog.Accepted:
             added_dl_id, db_payload, final_auth, start_immediately_flag, accepted_how = new_dl_dialog.get_final_download_data()
@@ -2787,6 +2795,7 @@ class PIDM(QMainWindow):
                     )
                 elif accepted_how == "now" and db_payload.get("queue_id") is not None:
                     self.try_auto_start_from_queue(db_payload["queue_id"])
+
             self.update_action_buttons_state()
 
     def _start_download_worker(self, download_id: int, url: str, save_path: str,
@@ -3595,8 +3604,13 @@ def setup_single_instance() -> bool:
         return False
 
 
-def show_download_dialog(url: str, settings, db):
-    dialog = NewDownloadDialog(settings, db)
+def show_download_dialog(url: str, settings, db, parent=None):
+    dialog = NewDownloadDialog(settings, db, parent)
+
+    # Connect refresh signal if parent has the right method
+    if parent and hasattr(parent, 'refresh_download_table_with_current_filter'):
+        dialog.download_added.connect(parent.refresh_download_table_with_current_filter)
+
     filename = guess_filename_from_url(url)
     initial_metadata = {
         "filename": filename,
@@ -3606,6 +3620,8 @@ def show_download_dialog(url: str, settings, db):
     }
 
     dialog.set_initial_data(url, initial_metadata, None)
+    dialog.fetch_metadata_async(url)  # ✅ same clean method reused
+
     dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
     dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
 
@@ -3613,14 +3629,8 @@ def show_download_dialog(url: str, settings, db):
     dialog.raise_()
     dialog.activateWindow()
 
-    # Async fetch
-    fetcher = MetadataFetcher(url)
-    fetcher.result.connect(lambda meta: dialog.update_metadata_fields(meta))
-    QTimer.singleShot(100, lambda: fetcher.start())
-
     QApplication.processEvents()
     dialog.exec()
-
 
 
 def apply_standalone_style(widget, settings):
@@ -3685,7 +3695,7 @@ if __name__ == "__main__":
 
     # Start the local proxy server and hook to download dialog
     proxy = ProxyServer()
-    proxy.link_received.connect(lambda url: show_download_dialog(url, settings, db))
+    proxy.link_received.connect(lambda url: show_download_dialog(url, settings, db, parent=win))
 
     win.show()
     sys.exit(app.exec())
