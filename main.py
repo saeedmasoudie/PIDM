@@ -48,7 +48,7 @@ def setup_logger(log_file="pidm.log"):
     logger.setLevel(logging.DEBUG)
 
     if logger.handlers:
-        return logger  # Avoid adding multiple handlers
+        return logger
 
     handler = RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=5, encoding="utf-8")
     formatter = logging.Formatter(
@@ -81,12 +81,16 @@ class DatabaseManager:
             db_dir = get_user_data_dir()
             db_dir.mkdir(parents=True, exist_ok=True)
             db_path = db_dir / "downloads.db"
+        else:
+            db_path = Path(db_path)
 
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self.db_path_str = str(db_path)
+        self.conn = sqlite3.connect(self.db_path_str, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.init_db()
 
     def init_db(self):
+        # Updated downloads table schema with referrer and custom_headers_json
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,14 +102,16 @@ class DatabaseManager:
             progress INTEGER,
             speed TEXT,
             eta TEXT,
-            queue_id INTEGER DEFAULT NULL, 
+            queue_id INTEGER DEFAULT NULL,
             queue_position INTEGER DEFAULT 0,
             created_at TEXT,
             finished_at TEXT,
             bytes_downloaded INTEGER DEFAULT 0,
             total_size INTEGER DEFAULT 0,
+            referrer TEXT DEFAULT NULL,
+            custom_headers_json TEXT DEFAULT NULL, -- <<< ADDED custom_headers_json column
             UNIQUE(url, save_path),
-            FOREIGN KEY(queue_id) REFERENCES queues(id) ON DELETE SET NULL 
+            FOREIGN KEY(queue_id) REFERENCES queues(id) ON DELETE SET NULL
         )""")
 
         self.conn.execute("""
@@ -117,21 +123,41 @@ class DatabaseManager:
             days TEXT DEFAULT '[]',
             enabled INTEGER DEFAULT 0,
             max_concurrent INTEGER DEFAULT 1,
-            pause_between INTEGER DEFAULT 0 
+            pause_between INTEGER DEFAULT 0
         )""")
         self.conn.execute("UPDATE queues SET days = '[]' WHERE days IS NULL OR TRIM(days) = ''")
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(downloads)")
+            columns = [column[1] for column in cursor.fetchall()]
+
+            if 'referrer' not in columns:
+                logger.info("Adding 'referrer' column to 'downloads' table.")
+                cursor.execute("ALTER TABLE downloads ADD COLUMN referrer TEXT DEFAULT NULL")
+
+            if 'custom_headers_json' not in columns: # <<< Migration for new column
+                logger.info("Adding 'custom_headers_json' column to 'downloads' table.")
+                cursor.execute("ALTER TABLE downloads ADD COLUMN custom_headers_json TEXT DEFAULT NULL")
+
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error during migration checks: {e}")
+
         self.conn.commit()
 
     # -------------------- Downloads --------------------
     def add_download(self, data: dict) -> int:
         cur = self.conn.cursor()
         try:
+            custom_headers_dict = data.get("custom_headers")
+            custom_headers_json_str = json.dumps(custom_headers_dict) if custom_headers_dict else None
+
             cur.execute("""
             INSERT INTO downloads (
                 url, file_name, save_path, description, status,
-                progress, speed, eta, queue_id, queue_position, 
-                created_at, bytes_downloaded, total_size
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                progress, speed, eta, queue_id, queue_position,
+                created_at, bytes_downloaded, total_size, referrer, custom_headers_json -- <<< ADDED columns
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) -- <<< ADDED placeholders
             """, (
                 data["url"], data["file_name"], data["save_path"],
                 data.get("description", ""),
@@ -140,83 +166,126 @@ class DatabaseManager:
                 data.get("queue_id"),
                 data.get("queue_position", 0),
                 data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                data.get("bytes_downloaded", 0), data.get("total_size", 0)
+                data.get("bytes_downloaded", 0), data.get("total_size", 0),
+                data.get("referrer"), # Referrer string
+                custom_headers_json_str # Serialized custom_headers dictionary
             ))
             self.conn.commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
+            logger.warning(f"IntegrityError: Download with URL {data['url']} and save_path {data['save_path']} likely already exists.")
             cur.execute("SELECT id FROM downloads WHERE url = ? AND save_path = ?",
                         (data["url"], data["save_path"]))
             row = cur.fetchone()
             return row["id"] if row else -1
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in add_download: {e}")
+            return -1
+        except json.JSONDecodeError as e: # Should not happen with dumps, but good for safety
+            logger.error(f"JSON encoding error for custom_headers in add_download: {e}")
+            return -1
 
     def update_download_progress_details(self, download_id, progress, bytes_downloaded):
-        self.conn.execute("""
-        UPDATE downloads
-        SET progress = ?, bytes_downloaded = ?
-        WHERE id = ?
-        """, (progress, bytes_downloaded, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("""
+            UPDATE downloads
+            SET progress = ?, bytes_downloaded = ?
+            WHERE id = ?
+            """, (progress, bytes_downloaded, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_download_progress_details for ID {download_id}: {e}")
 
     def update_total_size(self, download_id, total_size):
-        self.conn.execute("UPDATE downloads SET total_size = ? WHERE id = ?", (total_size, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("UPDATE downloads SET total_size = ? WHERE id = ?", (total_size, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_total_size for ID {download_id}: {e}")
 
     def update_status(self, download_id, status):
-        self.conn.execute("UPDATE downloads SET status = ? WHERE id = ?", (status, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("UPDATE downloads SET status = ? WHERE id = ?", (status, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_status for ID {download_id}: {e}")
 
     def update_status_and_progress_on_pause(self, download_id, status, progress, bytes_downloaded):
-        self.conn.execute("""
-        UPDATE downloads
-        SET status = ?, progress = ?, bytes_downloaded = ?
-        WHERE id = ?
-        """, (status, progress, bytes_downloaded, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("""
+            UPDATE downloads
+            SET status = ?, progress = ?, bytes_downloaded = ?
+            WHERE id = ?
+            """, (status, progress, bytes_downloaded, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_status_and_progress_on_pause for ID {download_id}: {e}")
 
     def mark_complete(self, download_id, finished_at):
-        # When a download completes, remove it from any queue
-        self.conn.execute("""
-        UPDATE downloads
-        SET status = ?, progress = 100, finished_at = ?, queue_id = NULL, queue_position = 0
-        WHERE id = ?
-        """, (STATUS_COMPLETE, finished_at, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("""
+            UPDATE downloads
+            SET status = ?, progress = 100, finished_at = ?, queue_id = NULL, queue_position = 0
+            WHERE id = ?
+            """, (STATUS_COMPLETE, finished_at, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in mark_complete for ID {download_id}: {e}")
 
     def delete_download(self, download_id):
-        self.conn.execute("DELETE FROM downloads WHERE id = ?", (download_id,))
-        self.conn.commit()
+        try:
+            self.conn.execute("DELETE FROM downloads WHERE id = ?", (download_id,))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in delete_download for ID {download_id}: {e}")
 
     def load_all(self) -> list:
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM downloads ORDER BY id DESC")
-        return [dict(row) for row in cur.fetchall()]
+        try:
+            cur.execute("SELECT * FROM downloads ORDER BY created_at DESC, id DESC")
+            return [dict(row) for row in cur.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in load_all: {e}")
+            return []
 
     def get_download_by_id(self, download_id) -> dict | None:
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM downloads WHERE id = ?", (download_id,))
-        row = cur.fetchone()
-        return dict(row) if row else None
+        try:
+            cur.execute("SELECT * FROM downloads WHERE id = ?", (download_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_download_by_id for ID {download_id}: {e}")
+            return None
 
     def get_downloads_in_queue(self, queue_id: int) -> list:
         cur = self.conn.cursor()
-        # Ensure we only get non-completed items for active queue processing
-        cur.execute("""
-            SELECT * FROM downloads
-            WHERE queue_id = ? 
-              AND status != ?  
-            ORDER BY queue_position ASC, id ASC
-        """, (queue_id, STATUS_COMPLETE))
-        return [dict(row) for row in cur.fetchall()]
+        try:
+            cur.execute("""
+                SELECT * FROM downloads
+                WHERE queue_id = ? 
+                  AND status != ?  
+                ORDER BY queue_position ASC, id ASC
+            """, (queue_id, STATUS_COMPLETE))
+            return [dict(row) for row in cur.fetchall()]
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_downloads_in_queue for Queue ID {queue_id}: {e}")
+            return []
 
     def update_download_queue_position(self, download_id: int, new_position: int):
-        self.conn.execute("UPDATE downloads SET queue_position = ? WHERE id = ?", (new_position, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("UPDATE downloads SET queue_position = ? WHERE id = ?", (new_position, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_download_queue_position for ID {download_id}: {e}")
 
     def update_download_queue_id(self, download_id: int, queue_id: int | None, position: int = 0):
-        self.conn.execute("UPDATE downloads SET queue_id = ?, queue_position = ? WHERE id = ?",
-                          (queue_id, position, download_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("UPDATE downloads SET queue_id = ?, queue_position = ? WHERE id = ?",
+                              (queue_id, position, download_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_download_queue_id for ID {download_id}: {e}")
 
     # -------------------- Queues --------------------
     def add_queue(self, name, start_time=None, stop_time=None, days=None,
@@ -234,83 +303,110 @@ class DatabaseManager:
             cur.execute("SELECT id FROM queues WHERE name = ?", (name,))
             row = cur.fetchone()
             return row["id"] if row else -1
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in add_queue: {e}")
+            return -1
 
     def get_all_queues(self) -> list:
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM queues ORDER BY id")
-        queues = []
-        for row in cur.fetchall():
-            q = dict(row)
-            try:
-                days_raw = q.get("days", "[]")
-                if isinstance(days_raw, str):
-                    q["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
-                elif isinstance(days_raw, list):
-                    q["days"] = days_raw
-                else:
+        try:
+            cur.execute("SELECT * FROM queues ORDER BY id")
+            queues = []
+            for row_data in cur.fetchall():
+                q = dict(row_data)
+                try:
+                    days_raw = q.get("days", "[]")
+                    if isinstance(days_raw, str):
+                        q["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
+                    elif isinstance(days_raw, list): # Already a list, use as is
+                        q["days"] = days_raw
+                    else: # Unexpected type
+                        q["days"] = []
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Failed to parse 'days' for queue {q.get('name')}: {e}")
                     q["days"] = []
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(f"Failed to parse 'days' for queue {q.get('name')}: {e}")
-                q["days"] = []
-            queues.append(q)
-        return queues
+                queues.append(q)
+            return queues
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_all_queues: {e}")
+            return []
 
     def get_queue_by_id(self, queue_id: int):
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM queues WHERE id = ?", (queue_id,))
-        row = cur.fetchone()
-        if row:
-            q_data = dict(row)
-            try:
-                days_raw = q_data.get("days", "[]")
-                if isinstance(days_raw, str):
-                    q_data["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
-                elif isinstance(days_raw, list):
-                    q_data["days"] = days_raw
-                else:
+        try:
+            cur.execute("SELECT * FROM queues WHERE id = ?", (queue_id,))
+            row = cur.fetchone()
+            if row:
+                q_data = dict(row)
+                try:
+                    days_raw = q_data.get("days", "[]")
+                    if isinstance(days_raw, str):
+                        q_data["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
+                    elif isinstance(days_raw, list):
+                        q_data["days"] = days_raw
+                    else:
+                        q_data["days"] = []
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Failed to parse 'days' for queue ID {queue_id}: {e}")
                     q_data["days"] = []
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(f"Failed to parse 'days' for queue ID {queue_id}: {e}")
-                q_data["days"] = []
-            return q_data
-        return None
+                return q_data
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_queue_by_id for Queue ID {queue_id}: {e}")
+            return None
 
     def get_queue_by_name(self, name: str):
         cur = self.conn.cursor()
-        cur.execute("SELECT * FROM queues WHERE name = ?", (name,))
-        row = cur.fetchone()
-        if row:
-            q_data = dict(row)
-            try:
-                days_raw = q_data.get("days", "[]")
-                if isinstance(days_raw, str):
-                    q_data["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
-                elif isinstance(days_raw, list):
-                    q_data["days"] = days_raw
-                else:
+        try:
+            cur.execute("SELECT * FROM queues WHERE name = ?", (name,))
+            row = cur.fetchone()
+            if row:
+                q_data = dict(row)
+                try:
+                    days_raw = q_data.get("days", "[]")
+                    if isinstance(days_raw, str):
+                        q_data["days"] = json.loads(days_raw) if days_raw and days_raw.strip().startswith("[") else []
+                    elif isinstance(days_raw, list):
+                        q_data["days"] = days_raw
+                    else:
+                        q_data["days"] = []
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Failed to parse 'days' for queue {name}: {e}")
                     q_data["days"] = []
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(f"Failed to parse 'days' for queue {name}: {e}")
-                q_data["days"] = []
-            return q_data
-        return None
+                return q_data
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in get_queue_by_name for queue {name}: {e}")
+            return None
 
-    def update_queue(self, queue_id: int, name: str, start_time: str, stop_time: str, days: list,
+    def update_queue(self, queue_id: int, name: str, start_time: str | None, stop_time: str | None, days: list,
                      enabled: int, max_concurrent: int = 1, pause_between: int = 0):
-        self.conn.execute("""
-            UPDATE queues
-            SET name = ?, start_time = ?, stop_time = ?, days = ?, enabled = ?, max_concurrent = ?, pause_between = ?
-            WHERE id = ?
-        """, (name, start_time, stop_time, json.dumps(days), enabled, max_concurrent, pause_between, queue_id))
-        self.conn.commit()
+        try:
+            self.conn.execute("""
+                UPDATE queues
+                SET name = ?, start_time = ?, stop_time = ?, days = ?, enabled = ?, max_concurrent = ?, pause_between = ?
+                WHERE id = ?
+            """, (name, start_time, stop_time, json.dumps(days), enabled, max_concurrent, pause_between, queue_id))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in update_queue for Queue ID {queue_id}: {e}")
 
     def delete_queue(self, queue_id):
-        self.conn.execute("UPDATE downloads SET queue_id = NULL, queue_position = 0 WHERE queue_id = ?", (queue_id,))
-        self.conn.execute("DELETE FROM queues WHERE id = ?", (queue_id,))
-        self.conn.commit()
+        try:
+            self.conn.execute("UPDATE downloads SET queue_id = NULL, queue_position = 0 WHERE queue_id = ?", (queue_id,))
+            self.conn.execute("DELETE FROM queues WHERE id = ?", (queue_id,))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in delete_queue for Queue ID {queue_id}: {e}")
 
     def close(self):
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+            logger.info(f"Database connection to {self.db_path_str} closed.")
+
+    def __del__(self):
+        self.close()
 
 
 class SettingsManager:
@@ -415,13 +511,16 @@ class DownloadWorker(QThread):
     global_speed_limit_bps = None
 
     def __init__(self, download_id: int, db_manager, url: str, save_path: str,
-                 initial_downloaded_bytes: int = 0, total_file_size: int = 0, auth=None, parent=None):
+                 initial_downloaded_bytes: int = 0, total_file_size: int = 0,
+                 auth=None, custom_headers: dict = None,
+                 parent=None):
         super().__init__(parent)
         self.download_id = download_id
         self.db = db_manager
         self.url = url
         self.save_path = Path(save_path)
         self.auth = auth
+        self.custom_headers = custom_headers if custom_headers is not None else {}
         self._last_db_write_time = time.time()
         self.resume_helper = ResumeFileHandler(self.save_path)
 
@@ -563,10 +662,12 @@ class DownloadWorker(QThread):
         self.status_changed.emit(STATUS_CONNECTING)
         self.db.update_status(self.download_id, STATUS_CONNECTING)
 
-        base_headers = {
+        effective_headers = {
             "User-Agent": "PIDM/1.0 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        current_headers = base_headers.copy()
+        effective_headers.update(self.custom_headers)
+
+        current_request_headers = effective_headers.copy()
         file_mode = "wb"
 
         if self._downloaded_bytes > 0:
@@ -599,7 +700,7 @@ class DownloadWorker(QThread):
                     self._downloaded_bytes = current_file_size
 
                 if self._downloaded_bytes > 0:
-                    current_headers["Range"] = f"bytes={self._downloaded_bytes}-"
+                    current_request_headers["Range"] = f"bytes={self._downloaded_bytes}-"
                     file_mode = "ab"
                     if not self._is_cancelled:
                         self.status_changed.emit(STATUS_RESUMING)
@@ -619,7 +720,7 @@ class DownloadWorker(QThread):
             timeout_config = httpx.Timeout(30.0, connect=15.0)
             self.httpx_client = httpx.Client(auth=self.auth, timeout=timeout_config, follow_redirects=True)
 
-            with self.httpx_client.stream("GET", self.url, headers=current_headers) as response:
+            with self.httpx_client.stream("GET", self.url, headers=current_request_headers) as response:
                 self.httpx_response = response
 
                 if self._is_cancelled:
@@ -873,126 +974,180 @@ class MetadataFetcher(QThread):
     error = Signal(str)
     timeout = Signal()
 
-    def __init__(self, url, auth=None, max_seconds=10):
+    def __init__(self, url, auth=None, max_seconds=10, custom_headers=None):
         super().__init__()
         self.original_url = url.strip()
         self.auth = auth
         self.final_url = self.original_url
         self.max_seconds = max_seconds
+        self.custom_headers = custom_headers if custom_headers is not None else {}
 
     def run(self):
         try:
             metadata = self._fetch_metadata_attempt(self.original_url)
             if metadata:
-                self.final_url = self.original_url
                 self.result.emit(metadata)
                 return
         except httpx.TimeoutException:
-            logger.error(f"[MetadataFetcher] Timeout for {self.original_url}")
+            logging.error(f"[MetadataFetcher] Timeout for {self.original_url}")  # Use logging consistently
         except Exception as e:
-            logger.error(f"[MetadataFetcher] Error with {self.original_url}: {e}")
+            logging.error(f"[MetadataFetcher] Error with {self.original_url}: {e}")
 
         if self.original_url.startswith("https://"):
             fallback_url = self.original_url.replace("https://", "http://", 1)
-            logger.debug(f"[MetadataFetcher] Trying HTTP fallback: {fallback_url}")
+            logging.debug(f"[MetadataFetcher] Trying HTTP fallback: {fallback_url}")
             try:
                 metadata = self._fetch_metadata_attempt(fallback_url)
                 if metadata:
-                    self.final_url = fallback_url
                     self.result.emit(metadata)
                     return
             except httpx.TimeoutException:
-                logger.error(f"[MetadataFetcher] Timeout for HTTP fallback {fallback_url}")
+                logging.error(f"[MetadataFetcher] Timeout for HTTP fallback {fallback_url}")
             except Exception as e:
-                logger.error(f"[MetadataFetcher] Error with HTTP fallback {fallback_url}: {e}")
+                logging.error(f"[MetadataFetcher] Error with HTTP fallback {fallback_url}: {e}")
 
-        logger.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting timeout.")
+        logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting timeout.")
         self.timeout.emit()
 
     def _fetch_metadata_attempt(self, url_to_fetch):
-        headers = {"User-Agent": "PIDM/1.0 Mozilla/5.0"}
+        request_headers = {"User-Agent": "PIDM/1.0 Mozilla/5.0"}
+        if self.custom_headers:
+            request_headers.update(self.custom_headers)
+
         auth_param = tuple(self.auth) if self.auth and isinstance(self.auth, (list, tuple)) and len(
             self.auth) == 2 else None
 
         try:
-            with httpx.Client(auth=auth_param, follow_redirects=True, timeout=self.max_seconds) as client:
-                logger.debug(f"[MetadataFetcher] Sending HEAD request to: {url_to_fetch}")
-                response = client.head(url_to_fetch, headers=headers)
+            transport = httpx.HTTPTransport(retries=1)
+            with httpx.Client(auth=auth_param, follow_redirects=True, timeout=self.max_seconds,
+                              transport=transport) as client:
+                logging.debug(
+                    f"[MetadataFetcher] Sending HEAD request to: {url_to_fetch} with headers: {request_headers}")
+                response = client.head(url_to_fetch, headers=request_headers)
                 response.raise_for_status()
-                logger.debug(f"[MetadataFetcher] HEAD headers: {dict(response.headers)}")
+                logging.debug(f"[MetadataFetcher] HEAD response from {response.url} headers: {dict(response.headers)}")
 
-                if response.headers.get("Content-Length"):
-                    logger.debug(f"[MetadataFetcher] Using HEAD data for {url_to_fetch}")
-                    return self._parse_headers(response.headers, url_to_fetch)
+                content_length_head = response.headers.get("Content-Length")
+                if content_length_head and int(content_length_head) > 0:
+                    logging.debug(f"[MetadataFetcher] Using HEAD data for {url_to_fetch}")
+                    return self._parse_headers(response.headers, str(response.url))
 
-                logger.warning(f"[MetadataFetcher] HEAD lacked Content-Length, trying GET for {url_to_fetch}")
-                headers_for_get = headers.copy()
+                logging.warning(
+                    f"[MetadataFetcher] HEAD lacked positive Content-Length (got: {content_length_head}), trying partial GET for {url_to_fetch}")
+
+                headers_for_get = request_headers.copy()
                 headers_for_get["Range"] = "bytes=0-0"
 
+                logging.debug(
+                    f"[MetadataFetcher] Sending GET (range 0-0) request to: {url_to_fetch} with headers: {headers_for_get}")
                 response_get = client.get(url_to_fetch, headers=headers_for_get, stream=True)
                 response_get.raise_for_status()
-                logger.debug(f"[MetadataFetcher] GET headers: {dict(response_get.headers)}")
-                _ = response_get.read(1)
-                return self._parse_headers(response_get.headers, url_to_fetch)
+                logging.debug(
+                    f"[MetadataFetcher] GET (range 0-0) response from {response_get.url} headers: {dict(response_get.headers)}")
+
+                try:
+                    for chunk in response_get.iter_bytes(chunk_size=1):
+                        break
+                finally:
+                    response_get.close()
+
+                return self._parse_headers(response_get.headers, str(response_get.url))
 
         except httpx.HTTPStatusError as e:
+            logging.error(
+                f"[MetadataFetcher] HTTPStatusError for {url_to_fetch}: {e.response.status_code} - {e.request.url}")
             if e.response.status_code == 401:
                 self.error.emit(self.tr("Authentication failed (401). Please check credentials."))
+            elif e.response.status_code == 403:
+                self.error.emit(self.tr(f"Access denied (403) for {e.request.url}"))
+            elif e.response.status_code == 404:
+                self.error.emit(self.tr(f"File not found (404) at {e.request.url}"))
             else:
-                self.error.emit(self.tr(f"Server error: {e.response.status_code}"))
+                self.error.emit(self.tr(f"Server error: {e.response.status_code} for {e.request.url}"))
             return None
         except httpx.TimeoutException:
-            logger.error(f"[MetadataFetcher] Timeout during metadata fetch for {url_to_fetch}")
+            logging.error(f"[MetadataFetcher] Timeout during metadata fetch for {url_to_fetch}")
             raise
+        except httpx.RequestError as e:
+            logging.error(f"[MetadataFetcher] RequestError for {url_to_fetch}: {type(e).__name__} - {e.request.url}")
+            self.error.emit(self.tr(f"Network error ({type(e).__name__}) for {e.request.url}"))
+            return None
         except Exception as e:
-            logger.error(f"[MetadataFetcher] Unknown error: {e}")
+            logging.error(f"[MetadataFetcher] Unknown error during metadata fetch for {url_to_fetch}: {e}")
             self.error.emit(self.tr(f"Fetch error: {type(e).__name__}"))
             return None
 
     def _parse_headers(self, response_headers, effective_url):
         content_type = response_headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
-
         size_val = 0
         content_length = response_headers.get("Content-Length")
         content_range = response_headers.get("Content-Range")
 
         if content_range and '/' in content_range:
             try:
-                size_val = int(content_range.split('/')[-1])
+                total_size_str = content_range.split('/')[-1]
+                if total_size_str != '*':
+                    size_val = int(total_size_str)
             except ValueError:
+                logging.warning(f"[MetadataFetcher] Could not parse size from Content-Range: {content_range}")
                 pass
-        elif content_length:
+
+        if size_val == 0 and content_length:
             try:
                 size_val = int(content_length)
             except ValueError:
+                logging.warning(f"[MetadataFetcher] Could not parse size from Content-Length: {content_length}")
                 pass
 
         filename_from_disposition = ""
         content_disposition = response_headers.get("Content-Disposition")
         if content_disposition:
-            match = re.search(r'filename\*?=(?:UTF-8\'\')?([^;\s]+)', content_disposition, re.IGNORECASE)
-            if match:
+            match_utf8 = re.search(
+                r"filename\*=\s*UTF-8''((?:%[0-9A-Fa-f]{2}|[A-Za-z0-9_.~!*'()-])+)|\bfilename\*=\s*([^';\s]+)",
+                content_disposition)
+            if match_utf8:
+                filename_value = match_utf8.group(1) or match_utf8.group(2)
                 try:
-                    filename_from_disposition = QUrl.fromPercentEncoding(match.group(1).encode('ascii')).strip('"')
-                except Exception:
-                    filename_from_disposition = match.group(1).strip('"')
-            else:
-                match_simple = re.search(r'filename="?([^"]+)"?', content_disposition)
+                    if match_utf8.group(1):
+                        filename_from_disposition = QUrl.fromPercentEncoding(filename_value.encode('ascii')).strip('" ')
+                    else:
+                        filename_from_disposition = QUrl.fromPercentEncoding(filename_value.encode('latin-1')).strip(
+                            '" ')
+                except Exception as e_decode:
+                    logging.warning(
+                        f"[MetadataFetcher] Could not decode filename from Content-Disposition (utf8*): {filename_value}, error: {e_decode}")
+                    filename_from_disposition = filename_value.strip('" ')  # Use raw if decoding fails
+
+            if not filename_from_disposition:
+                match_simple = re.search(r'filename="([^"]+)"', content_disposition)
                 if match_simple:
                     filename_from_disposition = match_simple.group(1)
+                else:
+                    match_no_quotes = re.search(r'filename=([^;\s]+)', content_disposition)
+                    if match_no_quotes:
+                        filename_from_disposition = match_no_quotes.group(1).strip('" ')
 
         if not filename_from_disposition:
-            parsed_url = QUrl(effective_url)
-            filename_from_url = Path(parsed_url.path()).name
-            if filename_from_url:
-                filename_from_disposition = filename_from_url
-            else:
+            try:
+                parsed_url = QUrl(effective_url)
+                parsed_url.setQuery("")
+                filename_from_url = Path(parsed_url.path()).name
+                if filename_from_url:
+                    filename_from_disposition = QUrl.fromPercentEncoding(
+                        filename_from_url.encode('utf-8')).strip()
+                else:
+                    filename_from_disposition = "downloaded_file"
+            except Exception as e_url_parse:
+                logging.warning(f"[MetadataFetcher] Could not parse filename from URL {effective_url}: {e_url_parse}")
                 filename_from_disposition = "downloaded_file"
 
         if "." not in filename_from_disposition and content_type != "application/octet-stream":
-            ext = mimetypes.guess_extension(content_type)
+            ext = mimetypes.guess_extension(content_type, strict=False)
             if ext:
                 filename_from_disposition += ext
+
+        filename_from_disposition = re.sub(r'[<>:"/\\|?*\x00-\x1F]', '_', filename_from_disposition)
+        filename_from_disposition = filename_from_disposition[:200]
 
         return {
             "content_length": size_val,
@@ -1030,7 +1185,7 @@ class UpdateCheckThread(QThread):
 
 
 class ProxyServer(QObject):
-    link_received = Signal(str)
+    link_received = Signal(dict)
 
     def __init__(self, start_port=9999, max_tries=10):
         super().__init__()
@@ -1054,13 +1209,13 @@ class ProxyServer(QObject):
         print("[ProxyServer] Failed to bind to any port.")
 
     def _make_handler(self):
-        outer = self
+        outer_self = self
 
         class Handler(BaseHTTPRequestHandler):
             def _set_headers(self, status=200):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")  # Allow CORS
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.end_headers()
@@ -1071,6 +1226,7 @@ class ProxyServer(QObject):
             def do_POST(self):
                 if self.path != "/api/download":
                     self._set_headers(404)
+                    self.wfile.write(b'{"error":"invalid path"}')
                     return
 
                 content_length = int(self.headers.get("Content-Length", 0))
@@ -1079,19 +1235,30 @@ class ProxyServer(QObject):
                 try:
                     data = json.loads(raw_data)
                     url = data.get("url")
+
                     if url:
-                        outer.link_received.emit(url)
-                        self._set_headers()
-                        self.wfile.write(b'{"status":"ok"}')
+                        download_info = {
+                            "url": url,
+                            "cookies": data.get("cookies"),
+                            "referrer": data.get("referrer"),
+                            "userAgent": data.get("userAgent")
+                        }
+                        outer_self.link_received.emit(download_info)
+                        self._set_headers(200)
+                        self.wfile.write(b'{"status":"ok", "message":"Download info received"}')
                     else:
                         self._set_headers(400)
-                        self.wfile.write(b'{"error":"missing url"}')
+                        self.wfile.write(b'{"error":"missing url in payload"}')
+                except json.JSONDecodeError:
+                    self._set_headers(400)
+                    self.wfile.write(b'{"error":"invalid json"}')
                 except Exception as e:
                     self._set_headers(500)
                     self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
 
             def log_message(self, format, *args):
-                return  # Suppress log output
+                logger.debug(f"[ProxyServer][Handler] {format % args}")
+                return
 
         return Handler
 
@@ -1205,7 +1372,8 @@ class NewDownloadDialog(QDialog):
         self.remember_queue_choice = False
         self.auth_tuple_from_url_dialog = None
         self.final_download_id = None
-        self.fetched_metadata = None
+        self.fetched_metadata = {}
+        self.custom_headers_for_download = None
         self.accepted_action = None
         self.guessed_filename = "downloaded_file"
 
@@ -1313,44 +1481,60 @@ class NewDownloadDialog(QDialog):
                 self.queue_combo.setCurrentIndex(idx)
                 self.remember_queue_checkbox.setChecked(True)
 
-    def fetch_metadata_async(self, url: str, auth: tuple | None = None):
-        self._metadata_fetcher = MetadataFetcher(url, auth)
-        self._metadata_fetcher.result.connect(lambda meta: self.update_metadata_fields(meta))
-        QTimer.singleShot(100, lambda: self._metadata_fetcher.start())
+    def fetch_metadata_async(self, url: str, auth: tuple | None = None, custom_headers=None):
+        self.custom_headers_for_download = custom_headers
+        logger.debug(f"NewDownloadDialog: Stored custom_headers for metadata fetch: {self.custom_headers_for_download}")
+
+        self._metadata_fetcher = MetadataFetcher(url, auth, custom_headers=custom_headers)
+        self._metadata_fetcher.result.connect(self.update_metadata_fields)
+        self._metadata_fetcher.error.connect(self._handle_metadata_error)
+        self._metadata_fetcher.timeout.connect(self._handle_metadata_timeout)
+
+        QTimer.singleShot(0, self._metadata_fetcher.start)
+
+    def _handle_metadata_error(self, error_message):
+        QMessageBox.warning(self, self.tr("Metadata Error"),
+                            self.tr("Could not fetch download information:\n{0}").format(error_message))
+        logger.error(f"Metadata Error Slot Called: {error_message}")
+
+    def _handle_metadata_timeout(self):
+        QMessageBox.warning(self, self.tr("Metadata Timeout"),
+                            self.tr("Fetching download information timed out."))
+        logger.warning("Metadata Timeout Slot Called")
 
     def update_metadata_fields(self, metadata: dict):
+        logger.debug(f"NewDownloadDialog: Updating metadata fields with: {metadata}")
         self.fetched_metadata = metadata
-        filename = metadata.get("filename", "downloaded_file")
+        filename = metadata.get("filename", self.guessed_filename)
         size_bytes = metadata.get("content_length", 0)
 
         self.file_name_preview_label.setText(self.tr("Filename: ") + filename)
         self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
 
-        # Update icon
         icon = get_system_icon_for_file(filename)
         pixmap = icon.pixmap(48, 48)
         self.file_icon_label.setPixmap(
-            pixmap if not pixmap.isNull() else QIcon(get_asset_path("assets/icons/file-x.svg")).pixmap(48, 48))
+            pixmap if not pixmap.isNull() else QIcon(get_asset_path("assets/icons/file-x.svg")).pixmap(48, 48)
+        )
 
-        # Only update save_path if still default
-        current_path = self.save_path_combo.currentText().strip()
-        if not current_path or Path(current_path).name == "downloaded_file":
+        current_path_in_combo = self.save_path_combo.currentText().strip()
+        if not current_path_in_combo or \
+                Path(current_path_in_combo).is_dir() or \
+                Path(current_path_in_combo).name == "downloaded_file":
             default_save_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
             self.save_path_combo.setCurrentText(str(Path(default_save_dir) / filename))
 
-    def set_initial_data(self, url: str, metadata: dict, auth: tuple | None):
+    def set_initial_data(self, url: str, metadata: dict | None, auth: tuple | None):
         self.url_display.setText(url)
         self.auth_tuple_from_url_dialog = auth
         self.fetched_metadata = metadata or {}
 
-        # Guess filename from metadata or fallback to URL
-        filename = metadata.get("filename") or guess_filename_from_url(url)
-        self.guessed_filename = filename  # ← stored for fallback
+        filename = self.fetched_metadata.get("filename") or guess_filename_from_url(url)
+        self.guessed_filename = filename
 
-        size_bytes = metadata.get("content_length", 0)
-        mime_type = metadata.get("content_type", "application/octet-stream")
+        size_bytes = self.fetched_metadata.get("content_length", 0)
+        # mime_type = self.fetched_metadata.get("content_type", "application/octet-stream") # Not used directly here
 
-        # Set icon + labels
         icon = get_system_icon_for_file(filename)
         pixmap = icon.pixmap(48, 48)
         self.file_icon_label.setPixmap(
@@ -1359,37 +1543,44 @@ class NewDownloadDialog(QDialog):
         self.file_name_preview_label.setText(self.tr("Filename: ") + filename)
         self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
 
-        # Update default save path (only if not already filled)
         current_path_in_combo = self.save_path_combo.currentText().strip()
-        # If the path is empty OR is a directory (no filename), fill with full path + filename
         if not current_path_in_combo or Path(current_path_in_combo).is_dir():
             default_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
             full_path = str(Path(default_dir) / filename)
             self.save_path_combo.setCurrentText(full_path)
 
     def select_save_path(self):
-        current_path = Path(self.save_path_combo.currentText().strip())
-        start_dir = str(current_path.parent) if current_path.name else self.settings.get(
-            "default_download_directory", str(Path.home() / "Downloads"))
+        current_path_str = self.save_path_combo.currentText().strip()
+        current_path_obj = Path(current_path_str if current_path_str else ".")
 
-        # Decide which filename to use
-        filename = current_path.name or self.fetched_metadata.get("filename") or self.guessed_filename
-        ext = Path(filename).suffix
+        start_dir = str(current_path_obj.parent) if current_path_obj.name else \
+            self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
+
+        filename_suggestion = current_path_obj.name or \
+                              self.fetched_metadata.get("filename") or \
+                              self.guessed_filename
+
+        if not Path(start_dir).is_dir():
+            start_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
+            if not Path(start_dir).is_dir():
+                start_dir = str(Path.home() / "Downloads")
+                Path(start_dir).mkdir(parents=True, exist_ok=True)
+
+        target_path_suggestion = str(Path(start_dir) / filename_suggestion)
+
+        ext = Path(filename_suggestion).suffix
         mime_type = self.fetched_metadata.get("content_type", "application/octet-stream")
-
-        # Guess extension if missing
-        if not ext:
+        if not ext and mime_type != "application/octet-stream":
             guessed_ext = mimetypes.guess_extension(mime_type)
             if guessed_ext:
-                filename += guessed_ext
                 ext = guessed_ext
 
-        file_filter = f"{mime_type} (*{ext})" if ext else "All Files (*)"
+        file_filter = f"{mime_type} (*{ext})" if ext else self.tr("All Files (*)")
 
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
             self.tr("Save File As"),
-            str(Path(start_dir) / filename),
+            target_path_suggestion,
             file_filter
         )
 
@@ -1409,34 +1600,39 @@ class NewDownloadDialog(QDialog):
         self.selected_queue_id = self.queue_combo.currentData()
         self.remember_queue_choice = self.remember_queue_checkbox.isChecked()
 
-        if self.remember_queue_choice and self.selected_queue_id is not None:
+        if self.remember_queue_choice:
             self.settings.set("remembered_queue_id", self.selected_queue_id)
-        elif self.remember_queue_choice and self.selected_queue_id is None:
-            self.settings.set("remembered_queue_id", None)
 
         file_name_to_save = Path(self.download_path_str).name
-        total_size = self.fetched_metadata.get("content_length", 0)
+        total_size = self.fetched_metadata.get("content_length", 0) if isinstance(self.fetched_metadata, dict) else 0
+        final_url = self.fetched_metadata.get("final_url", self.url_display.text()) if isinstance(self.fetched_metadata,
+                                                                                                  dict) else self.url_display.text()
 
         queue_pos = 0
         if self.selected_queue_id is not None:
             items_in_selected_queue = self.db.get_downloads_in_queue(self.selected_queue_id)
             if items_in_selected_queue:
-                queue_pos = max(d.get("queue_position", 0) for d in items_in_selected_queue) + 1
+                queue_pos = max((d.get("queue_position", 0) for d in items_in_selected_queue),
+                                default=-1) + 1
             else:
-                queue_pos = 1
+                queue_pos = 0
 
-        return {
-            "url": self.fetched_metadata.get("final_url", self.url_display.text()),
+        data_for_db = {
+            "url": final_url,
             "file_name": file_name_to_save,
             "save_path": self.download_path_str,
             "description": self.description_input.text().strip(),
             "status": status_on_add,
             "queue_id": self.selected_queue_id,
-            "queue_position": queue_pos if self.selected_queue_id is not None else 0,
+            "queue_position": queue_pos,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "total_size": total_size,
             "progress": 0, "speed": "", "eta": "", "bytes_downloaded": 0,
+            "referrer": self.custom_headers_for_download.get("Referer") if self.custom_headers_for_download else None,
+            "custom_headers": self.custom_headers_for_download
         }
+        logger.debug(f"NewDownloadDialog: Prepared data for DB: {data_for_db}")
+        return data_for_db
 
     def _handle_download_later(self):
         self.accepted_action = "later"
@@ -1448,17 +1644,26 @@ class NewDownloadDialog(QDialog):
             if main_queue:
                 db_payload["queue_id"] = main_queue["id"]
                 items_in_main_queue = self.db.get_downloads_in_queue(main_queue["id"])
-                db_payload["queue_position"] = max(
-                    d.get("queue_position", 0) for d in items_in_main_queue) + 1 if items_in_main_queue else 1
+                db_payload["queue_position"] = max((d.get("queue_position", 0) for d in items_in_main_queue),
+                                                   default=-1) + 1 if items_in_main_queue else 0
             else:
-                QMessageBox.warning(self, self.tr("No Default Queue"),
-                                    self.tr("Cannot add to 'Download Later' without a queue. Please select a queue."))
-                return
+                all_queues = self.db.get_all_queues()
+                if all_queues:
+                    db_payload["queue_id"] = all_queues[0]["id"]
+                    items_in_first_queue = self.db.get_downloads_in_queue(all_queues[0]["id"])
+                    db_payload["queue_position"] = max((d.get("queue_position", 0) for d in items_in_first_queue),
+                                                       default=-1) + 1 if items_in_first_queue else 0
+                    QMessageBox.information(self, self.tr("Queue Assigned"),
+                                            self.tr(f"No specific queue selected. Download added to '{all_queues[0]['name']}' queue."))
+                else:
+                    QMessageBox.warning(self, self.tr("No Queue Available"),
+                                        self.tr("Cannot 'Download Later' without an available queue. Please create a queue or select one if available."))
+                    return
 
         self.final_download_id = self.db.add_download(db_payload)
         if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Duplicate Download"),
-                                self.tr("This download (URL and save path) already exists."))
+            QMessageBox.warning(self, self.tr("Error Adding Download"),
+                                self.tr("This download (URL and save path) might already exist or another error occurred."))
             return
         self.download_added.emit()
         super().accept()
@@ -1473,18 +1678,20 @@ class NewDownloadDialog(QDialog):
 
         self.final_download_id = self.db.add_download(db_payload)
         if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Duplicate Download"),
-                                self.tr("This download (URL and save path) already exists."))
+            QMessageBox.warning(self, self.tr("Error Adding Download"),
+                                self.tr("This download (URL and save path) might already exist or another error occurred."))
             return
         self.download_added.emit()
         super().accept()
 
-    def get_final_download_data(self) -> tuple[int | None, dict | None, tuple | None, bool, str | None]:
-        if self.result() == QDialog.Accepted and self.final_download_id:
+    def get_final_download_data(self) -> tuple[
+        int | None, dict | None, tuple | None, bool, str | None, dict | None]:
+        if self.result() == QDialog.Accepted and self.final_download_id is not None:
             db_data = self.db.get_download_by_id(self.final_download_id)
-            start_now = (db_data.get("status") == STATUS_CONNECTING)
-            return self.final_download_id, db_data, self.auth_tuple_from_url_dialog, start_now, self.accepted_action
-        return None, None, None, False, None
+            start_now = (db_data.get("status") == STATUS_CONNECTING if db_data else False)
+
+            return self.final_download_id, db_data, self.auth_tuple_from_url_dialog, start_now, self.accepted_action, self.custom_headers_for_download
+        return None, None, None, False, None, None
 
 
 class NewBatchDownloadDialog(QDialog):
@@ -1858,33 +2065,52 @@ class PropertiesDialog(QDialog):
     def __init__(self, download_data: dict, db_manager: DatabaseManager, parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Download Properties"))
-        self.setMinimumWidth(500)
-        self.download_data = download_data
+        self.setMinimumWidth(550)
+        self.download_data = download_data.copy()
         self.db = db_manager
 
         layout = QVBoxLayout(self)
 
+        # --- Icon ---
         icon_label = QLabel()
-        icon = get_system_icon_for_file(download_data["file_name"])
+        icon = get_system_icon_for_file(download_data.get("file_name", "unknown_file.dat"))
         icon_label.setPixmap(icon.pixmap(48, 48))
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label)
 
         form_layout = QFormLayout()
-        form_layout.addRow(self.tr("<b>File Name:</b>"), QLabel(download_data['file_name']))
+        form_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
+        # --- File Name (Read-only, derived from save_path change) ---
+        self.file_name_label = QLabel(download_data.get('file_name', self.tr("N/A")))
+        form_layout.addRow(self.tr("<b>File Name:</b>"), self.file_name_label)
+
+        # --- Description (Editable) ---
         self.description_edit = QLineEdit(download_data.get('description', ''))
         form_layout.addRow(self.tr("<b>Description:</b>"), self.description_edit)
 
-        form_layout.addRow(self.tr("<b>Status:</b>"), QLabel(self.tr(download_data['status'])))
+        # --- Status (Read-only) ---
+        form_layout.addRow(self.tr("<b>Status:</b>"), QLabel(self.tr(download_data.get('status', self.tr("N/A")))))
 
+        # --- Size (Read-only) ---
         size_bytes = download_data.get("total_size", 0)
         form_layout.addRow(self.tr("<b>Size:</b>"), QLabel(format_size(size_bytes)))
 
+        # --- Downloaded (Read-only) ---
         downloaded_bytes = download_data.get("bytes_downloaded", 0)
         form_layout.addRow(self.tr("<b>Downloaded:</b>"), QLabel(format_size(downloaded_bytes)))
 
-        self.save_path_edit = QLineEdit(download_data['save_path'])
+        # --- Speed & ETA (Read-only, if available) ---
+        speed = download_data.get('speed')
+        if speed:
+            form_layout.addRow(self.tr("<b>Speed:</b>"), QLabel(speed))
+
+        eta = download_data.get('eta')
+        if eta:
+            form_layout.addRow(self.tr("<b>ETA:</b>"), QLabel(eta))
+
+        # --- Save Path (Editable) ---
+        self.save_path_edit = QLineEdit(download_data.get('save_path', ''))
         browse_btn = QPushButton(self.tr("Browse..."))
         browse_btn.clicked.connect(self._browse_save_path)
         path_layout = QHBoxLayout()
@@ -1892,63 +2118,121 @@ class PropertiesDialog(QDialog):
         path_layout.addWidget(browse_btn)
         form_layout.addRow(self.tr("<b>Save Path:</b>"), path_layout)
 
-        url_label_text = f'<a href="{download_data["url"]}">{download_data["url"]}</a>'
+        # --- URL (Read-only Link) ---
+        url_text = download_data.get("url", "")
+        url_label_text = f'<a href="{url_text}">{url_text}</a>' if url_text else self.tr("N/A")
         url_label = QLabel(url_label_text)
         url_label.setOpenExternalLinks(True)
         url_label.setWordWrap(True)
         form_layout.addRow(self.tr("<b>URL:</b>"), url_label)
 
-        created_dt = QDateTime.fromString(download_data.get('created_at', ''), Qt.ISODate)
-        if not created_dt.isValid(): created_dt = QDateTime.fromString(download_data.get('created_at', ''),
-                                                                       "yyyy-MM-dd HH:mm:ss")
-        form_layout.addRow(self.tr("<b>Added On:</b>"), QLabel(
-            created_dt.toString("yyyy-MM-dd hh:mm:ss") if created_dt.isValid() else self.tr("N/A")))
+        # --- Referrer URL (Read-only Link, if exists) ---
+        referrer_url = download_data.get("referrer")
+        if referrer_url:
+            referrer_label_text = f'<a href="{referrer_url}">{referrer_url}</a>'
+            referrer_label = QLabel(referrer_label_text)
+            referrer_label.setOpenExternalLinks(True)
+            referrer_label.setWordWrap(True)
+            form_layout.addRow(self.tr("<b>Referrer:</b>"), referrer_label)
 
+        # --- Queue (Read-only, if part of a queue) ---
+        queue_id = download_data.get("queue_id")
+        if queue_id is not None:
+            queue_data = self.db.get_queue_by_id(queue_id)
+            queue_name = queue_data.get("name", self.tr("Unknown Queue")) if queue_data else self.tr("N/A")
+            form_layout.addRow(self.tr("<b>Queue:</b>"), QLabel(queue_name))
+
+        # --- Added On (Read-only) ---
+        created_at_str = download_data.get('created_at', '')
+        created_dt = QDateTime.fromString(created_at_str, Qt.ISODate)
+        if not created_dt.isValid() and created_at_str:
+            created_dt = QDateTime.fromString(created_at_str, "yyyy-MM-dd HH:mm:ss")
+        form_layout.addRow(self.tr("<b>Added On:</b>"), QLabel(
+            created_dt.toString("yyyy-MM-dd hh:mm:ss ap") if created_dt.isValid() else self.tr("N/A")))
+
+        # --- Completed On (Read-only, if completed) ---
         finished_at_str = download_data.get('finished_at')
         if finished_at_str:
             finished_dt = QDateTime.fromString(finished_at_str, Qt.ISODate)
-            if not finished_dt.isValid(): finished_dt = QDateTime.fromString(finished_at_str, "yyyy-MM-dd HH:mm:ss")
+            if not finished_dt.isValid() and finished_at_str:
+                finished_dt = QDateTime.fromString(finished_at_str, "yyyy-MM-dd HH:mm:ss")
             form_layout.addRow(self.tr("<b>Completed On:</b>"), QLabel(
-                finished_dt.toString("yyyy-MM-dd hh:mm:ss") if finished_dt.isValid() else self.tr("N/A")))
+                finished_dt.toString("yyyy-MM-dd hh:mm:ss ap") if finished_dt.isValid() else self.tr("N/A")))
 
         layout.addLayout(form_layout)
         layout.addStretch()
 
+        # --- Buttons ---
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
     def _browse_save_path(self):
-        current_path = self.save_path_edit.text()
-        dir_path = str(Path(current_path).parent if Path(current_path).name else Path.home() / "Downloads")
-        file_name_suggestion = Path(current_path).name or self.download_data.get("file_name", "download")
+        current_path_str = self.save_path_edit.text()
+        current_path = Path(current_path_str)
 
-        new_path, _ = QFileDialog.getSaveFileName(self, self.tr("Change Save Location"),
-                                                  str(Path(dir_path) / file_name_suggestion))
-        if new_path:
-            self.save_path_edit.setText(new_path)
+        if current_path.is_file():
+            dir_path = str(current_path.parent)
+            file_name_suggestion = current_path.name
+        elif current_path.is_dir() or not current_path_str:
+            dir_path = current_path_str or str(Path.home() / "Downloads")
+            file_name_suggestion = self.download_data.get("file_name", "download")
+        else:
+            dir_path = str(current_path.parent)
+            file_name_suggestion = current_path.name
+
+        if not Path(dir_path).exists():
+            dir_path = str(Path.home() / "Downloads")
+
+        target_path = str(Path(dir_path) / file_name_suggestion)
+
+        new_path_str, _ = QFileDialog.getSaveFileName(self, self.tr("Change Save Location"), target_path)
+        if new_path_str:
+            self.save_path_edit.setText(new_path_str)
+            self.file_name_label.setText(Path(new_path_str).name)
 
     def accept(self):
         new_path = self.save_path_edit.text()
         new_desc = self.description_edit.text()
 
-        changed = False
-        if new_path != self.download_data["save_path"]:
-            self.download_data["save_path"] = new_path
-            self.download_data["file_name"] = Path(new_path).name
-            self.db.conn.execute("UPDATE downloads SET save_path = ?, file_name = ? WHERE id = ?",
-                                 (new_path, Path(new_path).name, self.download_data["id"]))
-            changed = True
+        original_data = self.db.get_download_by_id(self.download_data["id"])
+        if not original_data:
+            QMessageBox.warning(self, self.tr("Error"),
+                                self.tr("Could not find the original download data. It might have been deleted."))
+            super().reject()
+            return
 
-        if new_desc != self.download_data.get("description", ""):
-            self.download_data["description"] = new_desc
-            self.db.conn.execute("UPDATE downloads SET description = ? WHERE id = ?",
-                                 (new_desc, self.download_data["id"]))
-            changed = True
+        changed_fields = {}
 
-        if changed:
-            self.db.conn.commit()
+        if new_path != original_data.get("save_path"):
+            changed_fields["save_path"] = new_path
+            changed_fields["file_name"] = Path(new_path).name
+
+        if new_desc != original_data.get("description", ""):
+            changed_fields["description"] = new_desc
+
+        if changed_fields:
+            try:
+                set_clauses = []
+                params = []
+                for key, value in changed_fields.items():
+                    set_clauses.append(f"{key} = ?")
+                    params.append(value)
+
+                if set_clauses:
+                    params.append(self.download_data["id"])
+                    query = f"UPDATE downloads SET {', '.join(set_clauses)} WHERE id = ?"
+                    self.db.conn.execute(query, tuple(params))
+                    self.db.conn.commit()
+
+                    for key, value in changed_fields.items():
+                        self.download_data[key] = value
+            except Exception as e:
+                QMessageBox.critical(self, self.tr("Database Error"),
+                                     self.tr("Failed to update download properties:\n{0}").format(str(e)))
+                print(f"Error updating database: {e}")
+                return
 
         super().accept()
 
@@ -2776,7 +3060,7 @@ class PIDM(QMainWindow):
         new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
         new_dl_dialog.download_added.connect(self.refresh_download_table_with_current_filter)
         new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
-        new_dl_dialog.fetch_metadata_async(url, auth_tuple)  # ✅ background fetch inside the dialog
+        new_dl_dialog.fetch_metadata_async(url, auth_tuple)
 
         if new_dl_dialog.exec() == QDialog.Accepted:
             added_dl_id, db_payload, final_auth, start_immediately_flag, accepted_how = new_dl_dialog.get_final_download_data()
@@ -2804,14 +3088,41 @@ class PIDM(QMainWindow):
             logger.info(f"Download ID {download_id} worker already active.")
             return
 
-        worker = DownloadWorker(download_id, self.db, url, save_path, initial_bytes, total_size, auth_tuple,
+        retrieved_custom_headers = None
+        dl_entry = self.db.get_download_by_id(download_id)
+
+        if dl_entry:
+            worker_original_queue_id = dl_entry.get("queue_id")
+            custom_headers_json_str = dl_entry.get("custom_headers_json")
+            if custom_headers_json_str:
+                try:
+                    retrieved_custom_headers = json.loads(custom_headers_json_str)
+                    logger.info(f"Retrieved custom_headers for download {download_id}: {retrieved_custom_headers}")
+                except json.JSONDecodeError:
+                    logger.error(
+                        f"Failed to decode custom_headers_json for download {download_id}. Proceeding without them.")
+                    retrieved_custom_headers = None
+            else:
+                logger.info(f"No custom_headers_json found in DB for download {download_id}.")
+        else:
+            logger.warning(f"Could not retrieve DB entry for download ID {download_id} when starting worker.")
+            worker_original_queue_id = None
+
+        logger.info(f"Starting worker for ID {download_id} with custom_headers: {retrieved_custom_headers}")
+        worker = DownloadWorker(download_id, self.db, url, save_path,
+                                initial_bytes, total_size, auth_tuple,
+                                custom_headers=retrieved_custom_headers,
                                 parent=self)
+
         worker.status_changed.connect(self._on_worker_status_changed)
         worker.progress_updated.connect(self._on_worker_progress_updated)
         worker.finished_successfully.connect(self._on_worker_finished_successfully)
         worker.total_size_known.connect(self._on_worker_total_size_known)
-        dl_entry = self.db.get_download_by_id(download_id)
-        worker.original_queue_id = dl_entry.get("queue_id")
+
+        if hasattr(worker, 'original_queue_id'):
+            pass
+        elif dl_entry:
+            worker.original_queue_id = dl_entry.get("queue_id")
 
         self.active_workers[download_id] = {"worker": worker}
         worker.start()
@@ -3604,10 +3915,18 @@ def setup_single_instance() -> bool:
         return False
 
 
-def show_download_dialog(url: str, settings, db, parent=None):
+def show_download_dialog(download_info: dict, settings, db, parent=None):
+    url = download_info.get("url")
+    if not url:
+        logger.debug("[show_download_dialog] Error: URL is missing in download_info.")
+        return
+
+    cookies_str = download_info.get("cookies")
+    referrer_str = download_info.get("referrer")
+    user_agent_str = download_info.get("userAgent")
+
     dialog = NewDownloadDialog(settings, db, parent)
 
-    # Connect refresh signal if parent has the right method
     if parent and hasattr(parent, 'refresh_download_table_with_current_filter'):
         dialog.download_added.connect(parent.refresh_download_table_with_current_filter)
 
@@ -3619,8 +3938,19 @@ def show_download_dialog(url: str, settings, db, parent=None):
         "final_url": url
     }
 
+    custom_headers = {}
+    if cookies_str:
+        custom_headers["Cookie"] = cookies_str
+    if referrer_str:
+        custom_headers["Referer"] = referrer_str
+    if user_agent_str:
+        custom_headers["User-Agent"] = user_agent_str
+
+    logger.debug(f"[show_download_dialog] Processing URL: {url}")
+    logger.debug(f"[show_download_dialog] Custom Headers for fetch/download: {custom_headers}")
+
     dialog.set_initial_data(url, initial_metadata, None)
-    dialog.fetch_metadata_async(url)  # ✅ same clean method reused
+    dialog.fetch_metadata_async(url, custom_headers=custom_headers)
 
     dialog.setWindowFlags(Qt.Dialog | Qt.WindowStaysOnTopHint)
     dialog.setAttribute(Qt.WA_ShowWithoutActivating, False)
