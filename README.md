@@ -35,6 +35,10 @@ PIDM is a powerful and modern internet download manager written in Python using 
 
 > Download the latest release from the [Releases](https://github.com/saeedmasoudie/PIDM/releases) page.
 
+### 🔽 Extention Source (Chrome)
+
+> Download the latest release from the [Repository](https://github.com/saeedmasoudie/PIDM-ext).
+
 ### ⚙️ Run From Source
 
 1. **Clone the repo**:
@@ -53,7 +57,7 @@ PIDM is a powerful and modern internet download manager written in Python using 
     python main.py
     ```
 
-## 🧪 Requirements
+## 🧪 Requirements (for Run From Source)
 
 - Python 3.9+
 - PySide6
