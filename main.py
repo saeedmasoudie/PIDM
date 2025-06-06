@@ -90,7 +90,6 @@ class DatabaseManager:
         self.init_db()
 
     def init_db(self):
-        # Updated downloads table schema with referrer and custom_headers_json
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,79 +108,77 @@ class DatabaseManager:
             bytes_downloaded INTEGER DEFAULT 0,
             total_size INTEGER DEFAULT 0,
             referrer TEXT DEFAULT NULL,
-            custom_headers_json TEXT DEFAULT NULL, -- <<< ADDED custom_headers_json column
+            custom_headers_json TEXT DEFAULT NULL,
+            auth_json TEXT DEFAULT NULL,
             UNIQUE(url, save_path),
             FOREIGN KEY(queue_id) REFERENCES queues(id) ON DELETE SET NULL
         )""")
-
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS queues (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            start_time TEXT,
-            stop_time TEXT,
-            days TEXT DEFAULT '[]',
-            enabled INTEGER DEFAULT 0,
-            max_concurrent INTEGER DEFAULT 1,
-            pause_between INTEGER DEFAULT 0
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, start_time TEXT,
+            stop_time TEXT, days TEXT DEFAULT '[]', enabled INTEGER DEFAULT 0,
+            max_concurrent INTEGER DEFAULT 1, pause_between INTEGER DEFAULT 0
         )""")
-        self.conn.execute("UPDATE queues SET days = '[]' WHERE days IS NULL OR TRIM(days) = ''")
+        self.conn.commit()
 
+        self._migrate_schema()
+
+    def _migrate_schema(self):
+        """Adds new columns to the downloads table if they don't exist."""
         cursor = self.conn.cursor()
         try:
             cursor.execute("PRAGMA table_info(downloads)")
             columns = [column[1] for column in cursor.fetchall()]
-
             if 'referrer' not in columns:
                 logger.info("Adding 'referrer' column to 'downloads' table.")
                 cursor.execute("ALTER TABLE downloads ADD COLUMN referrer TEXT DEFAULT NULL")
-
-            if 'custom_headers_json' not in columns: # <<< Migration for new column
+            if 'custom_headers_json' not in columns:
                 logger.info("Adding 'custom_headers_json' column to 'downloads' table.")
                 cursor.execute("ALTER TABLE downloads ADD COLUMN custom_headers_json TEXT DEFAULT NULL")
-
+            if 'auth_json' not in columns:
+                logger.info("Adding 'auth_json' column to 'downloads' table.")
+                cursor.execute("ALTER TABLE downloads ADD COLUMN auth_json TEXT DEFAULT NULL")
+            self.conn.commit()
         except sqlite3.Error as e:
-            logger.error(f"SQLite error during migration checks: {e}")
+            logger.error(f"SQLite error during schema migration: {e}")
 
-        self.conn.commit()
-
-    # -------------------- Downloads --------------------
     def add_download(self, data: dict) -> int:
         cur = self.conn.cursor()
         try:
             custom_headers_dict = data.get("custom_headers")
-            custom_headers_json_str = json.dumps(custom_headers_dict) if custom_headers_dict else None
+            auth_tuple = data.get("auth")
+
+            custom_headers_json = json.dumps(custom_headers_dict) if custom_headers_dict else None
+            auth_json = json.dumps(auth_tuple) if auth_tuple else None
 
             cur.execute("""
             INSERT INTO downloads (
                 url, file_name, save_path, description, status,
                 progress, speed, eta, queue_id, queue_position,
-                created_at, bytes_downloaded, total_size, referrer, custom_headers_json -- <<< ADDED columns
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) -- <<< ADDED placeholders
+                created_at, bytes_downloaded, total_size, referrer,
+                custom_headers_json, auth_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["url"], data["file_name"], data["save_path"],
-                data.get("description", ""),
-                data.get("status", STATUS_QUEUED),
+                data.get("description", ""), data.get("status", "queued"),
                 data.get("progress", 0), data.get("speed", ""), data.get("eta", ""),
-                data.get("queue_id"),
-                data.get("queue_position", 0),
+                data.get("queue_id"), data.get("queue_position", 0),
                 data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 data.get("bytes_downloaded", 0), data.get("total_size", 0),
-                data.get("referrer"), # Referrer string
-                custom_headers_json_str # Serialized custom_headers dictionary
+                data.get("referrer"), custom_headers_json, auth_json
             ))
             self.conn.commit()
             return cur.lastrowid
         except sqlite3.IntegrityError:
-            logger.warning(f"IntegrityError: Download with URL {data['url']} and save_path {data['save_path']} likely already exists.")
-            cur.execute("SELECT id FROM downloads WHERE url = ? AND save_path = ?",
-                        (data["url"], data["save_path"]))
-            row = cur.fetchone()
+            logger.warning(
+                f"IntegrityError: Download with URL {data['url']} and save_path {data['save_path']} likely already exists.")
+            cur.execute("SELECT id FROM downloads WHERE url = ? AND save_path = ?", (data["url"], data["save_path"]))
+            row = cur.fetchone();
             return row["id"] if row else -1
         except sqlite3.Error as e:
-            logger.error(f"SQLite error in add_download: {e}")
+            logger.error(f"SQLite error in add_download: {e}");
             return -1
-        except json.JSONDecodeError as e: # Should not happen with dumps, but good for safety
+        except json.JSONDecodeError as e:
             logger.error(f"JSON encoding error for custom_headers in add_download: {e}")
             return -1
 
@@ -1365,20 +1362,21 @@ class NewDownloadDialog(QDialog):
         self.setWindowTitle(self.tr("Add New Download"))
         self.setMinimumSize(600, 320)
 
+        # --- Instance Variables ---
         self.settings = settings_manager
         self.db = database_manager
-        self.download_path_str = ""
-        self.selected_queue_id = None
-        self.remember_queue_choice = False
-        self.auth_tuple_from_url_dialog = None
-        self.final_download_id = None
         self.fetched_metadata = {}
-        self.custom_headers_for_download = None
-        self.accepted_action = None
         self.guessed_filename = "downloaded_file"
+        self.final_download_id = None
+        self.accepted_action = None
+
+        # Variables to store data passed from other dialogs/processes
+        self.auth_tuple = None
+        self.custom_headers_for_download = None
 
         apply_standalone_style(self, self.settings)
 
+        # --- UI Setup ---
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(15)
         form_layout.setVerticalSpacing(10)
@@ -1392,6 +1390,8 @@ class NewDownloadDialog(QDialog):
         self.save_path_combo.setEditable(True)
         self.save_path_combo.setMinimumWidth(300)
         self.save_path_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.save_path_combo.activated.connect(self._on_save_path_selected)
 
         recent_paths = self.settings.get("recent_paths", [])
         if recent_paths: self.save_path_combo.addItems(recent_paths)
@@ -1421,6 +1421,7 @@ class NewDownloadDialog(QDialog):
         form_layout.addRow(self.tr("Add to Queue:"), self.queue_combo)
         form_layout.addRow("", self.remember_queue_checkbox)
 
+        # --- Preview Widget Setup ---
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_widget.setFixedWidth(150)
@@ -1447,6 +1448,7 @@ class NewDownloadDialog(QDialog):
         preview_layout.addWidget(self.file_size_preview_label)
         preview_layout.addStretch()
 
+        # --- Main Layout and Buttons ---
         top_layout = QHBoxLayout()
         top_layout.addLayout(form_layout, stretch=3)
         top_layout.addWidget(preview_widget, stretch=1)
@@ -1467,6 +1469,16 @@ class NewDownloadDialog(QDialog):
         main_layout.addSpacing(10)
         main_layout.addWidget(button_box)
 
+    def _on_save_path_selected(self, index: int):
+        """When a user selects a recent path, combine it with the current filename."""
+        selected_path_str = self.save_path_combo.itemText(index)
+        path_obj = Path(selected_path_str)
+
+        if path_obj.is_dir():
+            current_filename = self.fetched_metadata.get("filename") or self.guessed_filename
+            new_full_path = str(path_obj / current_filename)
+            self.save_path_combo.setCurrentText(new_full_path)
+
     def load_queues_into_combo(self):
         self.queue_combo.clear()
         self.queue_combo.addItem(self.tr("None (Start Immediately)"), None)
@@ -1483,13 +1495,10 @@ class NewDownloadDialog(QDialog):
 
     def fetch_metadata_async(self, url: str, auth: tuple | None = None, custom_headers=None):
         self.custom_headers_for_download = custom_headers
-        logger.debug(f"NewDownloadDialog: Stored custom_headers for metadata fetch: {self.custom_headers_for_download}")
-
         self._metadata_fetcher = MetadataFetcher(url, auth, custom_headers=custom_headers)
         self._metadata_fetcher.result.connect(self.update_metadata_fields)
         self._metadata_fetcher.error.connect(self._handle_metadata_error)
         self._metadata_fetcher.timeout.connect(self._handle_metadata_timeout)
-
         QTimer.singleShot(0, self._metadata_fetcher.start)
 
     def _handle_metadata_error(self, error_message):
@@ -1526,28 +1535,20 @@ class NewDownloadDialog(QDialog):
 
     def set_initial_data(self, url: str, metadata: dict | None, auth: tuple | None):
         self.url_display.setText(url)
-        self.auth_tuple_from_url_dialog = auth
+        self.auth_tuple = auth
         self.fetched_metadata = metadata or {}
-
         filename = self.fetched_metadata.get("filename") or guess_filename_from_url(url)
         self.guessed_filename = filename
-
         size_bytes = self.fetched_metadata.get("content_length", 0)
-        # mime_type = self.fetched_metadata.get("content_type", "application/octet-stream") # Not used directly here
-
         icon = get_system_icon_for_file(filename)
         pixmap = icon.pixmap(48, 48)
-        self.file_icon_label.setPixmap(
-            pixmap if not pixmap.isNull() else QIcon(get_asset_path("assets/icons/file-x.svg")).pixmap(48, 48)
-        )
+        self.file_icon_label.setPixmap(pixmap if not pixmap.isNull() else QIcon(get_asset_path("assets/icons/file-x.svg")).pixmap(48, 48))
         self.file_name_preview_label.setText(self.tr("Filename: ") + filename)
         self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
-
         current_path_in_combo = self.save_path_combo.currentText().strip()
         if not current_path_in_combo or Path(current_path_in_combo).is_dir():
             default_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-            full_path = str(Path(default_dir) / filename)
-            self.save_path_combo.setCurrentText(full_path)
+            self.save_path_combo.setCurrentText(str(Path(default_dir) / filename))
 
     def select_save_path(self):
         current_path_str = self.save_path_combo.currentText().strip()
@@ -1588,50 +1589,37 @@ class NewDownloadDialog(QDialog):
             self.save_path_combo.setCurrentText(selected_path)
 
     def _prepare_download_data(self, status_on_add: str) -> dict | None:
-        self.download_path_str = self.save_path_combo.currentText().strip()
-        if not self.download_path_str:
+        download_path_str = self.save_path_combo.currentText().strip()
+        if not download_path_str:
             QMessageBox.warning(self, self.tr("Save Path Required"), self.tr("Please specify where to save the file."))
             return None
 
-        if self.remember_path_checkbox.isChecked():
-            self.settings.set("default_download_directory", str(Path(self.download_path_str).parent))
-        self.settings.add_recent_path(str(Path(self.download_path_str).parent))
-
-        self.selected_queue_id = self.queue_combo.currentData()
-        self.remember_queue_choice = self.remember_queue_checkbox.isChecked()
-
-        if self.remember_queue_choice:
-            self.settings.set("remembered_queue_id", self.selected_queue_id)
-
-        file_name_to_save = Path(self.download_path_str).name
-        total_size = self.fetched_metadata.get("content_length", 0) if isinstance(self.fetched_metadata, dict) else 0
-        final_url = self.fetched_metadata.get("final_url", self.url_display.text()) if isinstance(self.fetched_metadata,
-                                                                                                  dict) else self.url_display.text()
+        if self.remember_path_checkbox.isChecked(): self.settings.set("default_download_directory", str(Path(download_path_str).parent))
+        self.settings.add_recent_path(str(Path(download_path_str).parent))
+        selected_queue_id = self.queue_combo.currentData()
+        if self.remember_queue_checkbox.isChecked(): self.settings.set("remembered_queue_id", selected_queue_id)
 
         queue_pos = 0
-        if self.selected_queue_id is not None:
-            items_in_selected_queue = self.db.get_downloads_in_queue(self.selected_queue_id)
-            if items_in_selected_queue:
-                queue_pos = max((d.get("queue_position", 0) for d in items_in_selected_queue),
-                                default=-1) + 1
-            else:
-                queue_pos = 0
+        if selected_queue_id is not None:
+            items_in_q = self.db.get_downloads_in_queue(selected_queue_id)
+            queue_pos = max((d.get("queue_position", 0) for d in items_in_q), default=-1) + 1
 
+        # Prepare payload for the database
         data_for_db = {
-            "url": final_url,
-            "file_name": file_name_to_save,
-            "save_path": self.download_path_str,
+            "url": self.fetched_metadata.get("final_url", self.url_display.text()),
+            "file_name": Path(download_path_str).name,
+            "save_path": download_path_str,
             "description": self.description_input.text().strip(),
             "status": status_on_add,
-            "queue_id": self.selected_queue_id,
+            "queue_id": selected_queue_id,
             "queue_position": queue_pos,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "total_size": total_size,
             "progress": 0, "speed": "", "eta": "", "bytes_downloaded": 0,
+            "total_size": self.fetched_metadata.get("content_length", 0),
             "referrer": self.custom_headers_for_download.get("Referer") if self.custom_headers_for_download else None,
-            "custom_headers": self.custom_headers_for_download
+            "custom_headers": self.custom_headers_for_download,
+            "auth": self.auth_tuple,
         }
-        logger.debug(f"NewDownloadDialog: Prepared data for DB: {data_for_db}")
         return data_for_db
 
     def _handle_download_later(self):
@@ -1678,20 +1666,18 @@ class NewDownloadDialog(QDialog):
 
         self.final_download_id = self.db.add_download(db_payload)
         if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Error Adding Download"),
-                                self.tr("This download (URL and save path) might already exist or another error occurred."))
+            QMessageBox.warning(self, self.tr("Error Adding Download"), self.tr(
+                "This download (URL and save path) might already exist or another error occurred."))
             return
+
         self.download_added.emit()
         super().accept()
 
-    def get_final_download_data(self) -> tuple[
-        int | None, dict | None, tuple | None, bool, str | None, dict | None]:
+    def get_final_download_data(self) -> tuple[int | None, str | None]:
+        """Returns the ID of the new download and the action taken ('now' or 'later')."""
         if self.result() == QDialog.Accepted and self.final_download_id is not None:
-            db_data = self.db.get_download_by_id(self.final_download_id)
-            start_now = (db_data.get("status") == STATUS_CONNECTING if db_data else False)
-
-            return self.final_download_id, db_data, self.auth_tuple_from_url_dialog, start_now, self.accepted_action, self.custom_headers_for_download
-        return None, None, None, False, None, None
+            return self.final_download_id, self.accepted_action
+        return None, None
 
 
 class NewBatchDownloadDialog(QDialog):
@@ -2878,63 +2864,6 @@ class PIDM(QMainWindow):
         self.on_category_tree_selection_changed(self.category_tree.currentItem(), None)
         self.update_action_buttons_state()
 
-    # Not using it for now
-    # @Slot(str)
-    # def handle_external_url(self, url: str):
-    #     fetcher = MetadataFetcher(url)
-    #     loop = QEventLoop()
-    #     result_holder = {}
-    #
-    #     def on_result(data):
-    #         result_holder['metadata'] = data
-    #         loop.quit()
-    #
-    #     def on_error(msg):
-    #         print(f"[NativeURL] Metadata error: {msg}")
-    #         result_holder['metadata'] = None
-    #         loop.quit()
-    #
-    #     def on_timeout():
-    #         print("[NativeURL] Metadata timeout.")
-    #         result_holder['metadata'] = None
-    #         loop.quit()
-    #
-    #     fetcher.result.connect(on_result)
-    #     fetcher.error.connect(on_error)
-    #     fetcher.timeout.connect(on_timeout)
-    #     fetcher.start()
-    #     loop.exec()
-    #
-    #     metadata = result_holder.get('metadata') or {
-    #         "filename": Path(url).name or "download",
-    #         "final_url": url,
-    #         "content_type": "application/octet-stream",
-    #         "content_length": 0
-    #     }
-    #
-    #     new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
-    #     new_dl_dialog.set_initial_data(url, metadata, auth=None)
-    #
-    #     if new_dl_dialog.exec() == QDialog.Accepted:
-    #         added_dl_id, db_payload, auth, start_now, accepted_how = new_dl_dialog.get_final_download_data()
-    #
-    #         if added_dl_id and db_payload:
-    #             self._add_download_to_table(db_payload)
-    #
-    #             if start_now:
-    #                 self._start_download_worker(
-    #                     added_dl_id,
-    #                     db_payload["url"],
-    #                     db_payload["save_path"],
-    #                     0,
-    #                     db_payload["total_size"],
-    #                     auth
-    #                 )
-    #             elif accepted_how == "now" and db_payload.get("queue_id") is not None:
-    #                 self.try_auto_start_from_queue(db_payload["queue_id"])
-    #
-    #     self.update_action_buttons_state()
-
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def on_category_tree_selection_changed(self, current_item: QTreeWidgetItem, previous_item: QTreeWidgetItem):
         if not current_item:
@@ -3005,10 +2934,7 @@ class PIDM(QMainWindow):
                 status = dl_data['status']
                 is_active = selected_dl_id in self.active_workers
 
-                resumable_st = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE] + [
-                    s for s in STATUS_ERROR if "Error" in s
-                ]
-                if status in resumable_st:
+                if status not in [STATUS_COMPLETE, STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING]:
                     can_resume_dl = True
 
                 if is_active and status in [STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING]:
@@ -3053,76 +2979,82 @@ class PIDM(QMainWindow):
             return
 
         url, metadata, auth_tuple = url_dialog.get_url_and_metadata()
-        if not url or not metadata:
-            QMessageBox.warning(self, self.tr("Error"), self.tr("Failed to get URL or metadata."))
+        if not url:
+            QMessageBox.warning(self, self.tr("Error"), self.tr("A valid URL is required."))
             return
 
         new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
         new_dl_dialog.download_added.connect(self.refresh_download_table_with_current_filter)
         new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
-        new_dl_dialog.fetch_metadata_async(url, auth_tuple)
+        new_dl_dialog.fetch_metadata_async(url, auth_tuple, custom_headers=None)
 
         if new_dl_dialog.exec() == QDialog.Accepted:
-            added_dl_id, db_payload, final_auth, start_immediately_flag, accepted_how = new_dl_dialog.get_final_download_data()
+            added_dl_id, accepted_how = new_dl_dialog.get_final_download_data()
 
-            if added_dl_id and db_payload:
-                self._add_download_to_table(db_payload)
+            if added_dl_id:
+                db_payload = self.db.get_download_by_id(added_dl_id)
 
-                if start_immediately_flag:
-                    self._start_download_worker(
-                        added_dl_id,
-                        db_payload["url"],
-                        db_payload["save_path"],
-                        0,
-                        db_payload["total_size"],
-                        final_auth
-                    )
+                if not db_payload:  # Safety check
+                    logger.error(f"Failed to retrieve new download {added_dl_id} from DB.")
+                    return
+
+                # Check if the download should start immediately
+                if db_payload.get("status") == STATUS_CONNECTING:
+                    self._start_download_worker(added_dl_id)
                 elif accepted_how == "now" and db_payload.get("queue_id") is not None:
                     self.try_auto_start_from_queue(db_payload["queue_id"])
 
             self.update_action_buttons_state()
 
-    def _start_download_worker(self, download_id: int, url: str, save_path: str,
-                               initial_bytes: int, total_size: int, auth_tuple):
+    def _start_download_worker(self, download_id: int):
+        """
+        The single, robust entry point for starting or resuming any download.
+        It fetches all necessary data directly from the database.
+        """
         if download_id in self.active_workers:
             logger.info(f"Download ID {download_id} worker already active.")
             return
 
-        retrieved_custom_headers = None
         dl_entry = self.db.get_download_by_id(download_id)
+        if not dl_entry:
+            logger.error(f"Cannot start worker: No database entry found for download ID {download_id}")
+            self.update_action_buttons_state()
+            return
 
-        if dl_entry:
-            worker_original_queue_id = dl_entry.get("queue_id")
-            custom_headers_json_str = dl_entry.get("custom_headers_json")
-            if custom_headers_json_str:
-                try:
-                    retrieved_custom_headers = json.loads(custom_headers_json_str)
-                    logger.info(f"Retrieved custom_headers for download {download_id}: {retrieved_custom_headers}")
-                except json.JSONDecodeError:
-                    logger.error(
-                        f"Failed to decode custom_headers_json for download {download_id}. Proceeding without them.")
-                    retrieved_custom_headers = None
-            else:
-                logger.info(f"No custom_headers_json found in DB for download {download_id}.")
-        else:
-            logger.warning(f"Could not retrieve DB entry for download ID {download_id} when starting worker.")
-            worker_original_queue_id = None
+        # Deserialize headers and auth from the database record
+        custom_headers = None
+        auth_tuple = None
 
-        logger.info(f"Starting worker for ID {download_id} with custom_headers: {retrieved_custom_headers}")
-        worker = DownloadWorker(download_id, self.db, url, save_path,
-                                initial_bytes, total_size, auth_tuple,
-                                custom_headers=retrieved_custom_headers,
-                                parent=self)
+        if dl_entry.get("custom_headers_json"):
+            try:
+                custom_headers = json.loads(dl_entry["custom_headers_json"])
+            except (json.JSONDecodeError, TypeError):
+                logger.error(f"Failed to decode custom_headers_json for download {download_id}")
+
+        if dl_entry.get("auth_json"):
+            try:
+                # The auth tuple needs to be converted back to a tuple from the list JSON creates
+                auth_data = json.loads(dl_entry["auth_json"])
+                if isinstance(auth_data, list) and len(auth_data) == 2:
+                    auth_tuple = tuple(auth_data)
+            except (json.JSONDecodeError, TypeError):
+                logger.error(f"Failed to decode auth_json for download {download_id}")
+
+        logger.info(f"Starting worker for ID {download_id}")
+        worker = DownloadWorker(
+            download_id, self.db, dl_entry["url"], dl_entry["save_path"],
+            initial_downloaded_bytes=dl_entry["bytes_downloaded"],
+            total_file_size=dl_entry["total_size"],
+            auth=auth_tuple,
+            custom_headers=custom_headers,
+            parent=self
+        )
 
         worker.status_changed.connect(self._on_worker_status_changed)
         worker.progress_updated.connect(self._on_worker_progress_updated)
         worker.finished_successfully.connect(self._on_worker_finished_successfully)
         worker.total_size_known.connect(self._on_worker_total_size_known)
-
-        if hasattr(worker, 'original_queue_id'):
-            pass
-        elif dl_entry:
-            worker.original_queue_id = dl_entry.get("queue_id")
+        worker.original_queue_id = dl_entry.get("queue_id")
 
         self.active_workers[download_id] = {"worker": worker}
         worker.start()
@@ -3293,6 +3225,7 @@ class PIDM(QMainWindow):
         self.handle_resume_download_id_logic(dl_id)
 
     def handle_resume_download_id_logic(self, download_id: int):
+        """Handles resuming a paused/failed/queued download by calling the main worker starter."""
         worker_info = self.active_workers.get(download_id)
         if worker_info and worker_info["worker"]._is_paused:
             worker_info["worker"].resume()
@@ -3300,19 +3233,13 @@ class PIDM(QMainWindow):
             dl_data = self.db.get_download_by_id(download_id)
             if not dl_data: return
 
-            resumable_st = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE] + [s for s in STATUS_ERROR if
-                                                                                              "Error" in s]
-            if dl_data['status'] not in resumable_st:
+            resumable_statuses = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE]
+            if dl_data['status'] in resumable_statuses or "Error" in dl_data['status']:
+                self._start_download_worker(download_id)
+            else:
                 QMessageBox.information(self, self.tr("Cannot Resume"),
-                                        self.tr(f"Download is in status '{dl_data['status']}'."))
-                return
+                                        self.tr(f"Download is in status '{dl_data['status']}' and cannot be resumed."))
 
-            auth_for_resume = None
-            self._start_download_worker(
-                download_id, dl_data["url"], dl_data["save_path"],
-                dl_data.get("bytes_downloaded", 0), dl_data.get("total_size", 0),
-                auth_for_resume
-            )
         self.update_action_buttons_state()
 
     @Slot()
