@@ -193,6 +193,18 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"SQLite error in update_download_progress_details for ID {download_id}: {e}")
 
+    def reset_download_for_redownload(self, download_id: int):
+        try:
+            self.conn.execute("""
+                UPDATE downloads
+                SET bytes_downloaded = 0, progress = 0, status = ?, finished_at = NULL
+                WHERE id = ?
+            """, (STATUS_PAUSED, download_id))
+            self.conn.commit()
+            logger.info(f"Download {download_id} has been reset for redownload.")
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error in reset_download_for_redownload for ID {download_id}: {e}")
+
     def update_total_size(self, download_id, total_size):
         try:
             self.conn.execute("UPDATE downloads SET total_size = ? WHERE id = ?", (total_size, download_id))
@@ -2934,11 +2946,13 @@ class PIDM(QMainWindow):
                 status = dl_data['status']
                 is_active = selected_dl_id in self.active_workers
 
-                if status not in [STATUS_COMPLETE, STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING]:
+                resumable_statuses = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE]
+                if status in resumable_statuses or "Error" in status:
                     can_resume_dl = True
 
                 if is_active and status in [STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING]:
                     can_pause_dl = True
+
                 if is_active or status == STATUS_QUEUED:
                     can_cancel_dl = True
 
@@ -2947,20 +2961,14 @@ class PIDM(QMainWindow):
             item_data = current_tree_item.data(0, Qt.UserRole)
             if isinstance(item_data, int):
                 selected_queue_id = item_data
-                active_in_this_q = any(
-                    self.db.get_download_by_id(dl_id).get("queue_id") == selected_queue_id and info[
-                        "worker"].isRunning()
-                    and not info["worker"]._is_paused
-                    for dl_id, info in self.active_workers.items()
-                )
+                active_in_this_q = any(self.db.get_download_by_id(dl_id).get("queue_id") == selected_queue_id and info[
+                    "worker"].isRunning() and not info["worker"]._is_paused for dl_id, info in
+                                       self.active_workers.items())
                 pending_in_this_q = any(
-                    d["status"] not in [STATUS_COMPLETE, STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING]
-                    for d in self.db.get_downloads_in_queue(selected_queue_id)
-                )
-
+                    d["status"] not in [STATUS_COMPLETE, STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING] for d
+                    in self.db.get_downloads_in_queue(selected_queue_id))
                 can_start_q = pending_in_this_q or any(
                     d["status"] == STATUS_PAUSED for d in self.db.get_downloads_in_queue(selected_queue_id))
-
                 can_stop_q = active_in_this_q
 
         self.resume_action.setEnabled(can_resume_dl)
@@ -3225,7 +3233,6 @@ class PIDM(QMainWindow):
         self.handle_resume_download_id_logic(dl_id)
 
     def handle_resume_download_id_logic(self, download_id: int):
-        """Handles resuming a paused/failed/queued download by calling the main worker starter."""
         worker_info = self.active_workers.get(download_id)
         if worker_info and worker_info["worker"]._is_paused:
             worker_info["worker"].resume()
@@ -3241,6 +3248,37 @@ class PIDM(QMainWindow):
                                         self.tr(f"Download is in status '{dl_data['status']}' and cannot be resumed."))
 
         self.update_action_buttons_state()
+
+    @Slot()
+    def handle_redownload_selected(self):
+        dl_id = self._get_selected_download_id()
+        if dl_id is None: return
+
+        dl_data = self.db.get_download_by_id(dl_id)
+        if not dl_data: return
+
+        reply = QMessageBox.question(
+            self,
+            self.tr("Confirm Redownload"),
+            self.tr(
+                "This will delete the existing partial file and restart the download from the beginning. Are you sure?"),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            return
+
+        try:
+            Path(dl_data["save_path"]).unlink(missing_ok=True)
+            logger.info(f"Partial file for download {dl_id} deleted for redownload.")
+        except OSError as e:
+            logger.error(f"Error deleting partial file for redownload {dl_id}: {e}")
+            QMessageBox.warning(self, self.tr("File Error"),
+                                self.tr("Could not delete the partial file. Please check permissions."))
+
+        self.db.reset_download_for_redownload(dl_id)
+        self.refresh_download_table_with_current_filter()
+        self.handle_resume_download_id_logic(dl_id)
 
     @Slot()
     def handle_pause_selected(self):
@@ -3511,9 +3549,22 @@ class PIDM(QMainWindow):
         if not dl_data: return
 
         menu = QMenu(self)
+
         menu.addAction(self.resume_action)
         menu.addAction(self.pause_action)
         menu.addSeparator()
+
+        redownload_action = QAction(self.tr("Redownload"), self)
+        redownload_action.triggered.connect(self.handle_redownload_selected)
+
+        is_error_state = "Error" in dl_data['status'] or dl_data['status'] == STATUS_INCOMPLETE
+        is_complete_and_file_missing = (
+                    dl_data['status'] == STATUS_COMPLETE and not Path(dl_data['save_path']).exists())
+
+        redownload_action.setEnabled(is_error_state or is_complete_and_file_missing)
+        menu.addAction(redownload_action)
+        menu.addSeparator()
+
         menu.addAction(self.cancel_dl_action)
         menu.addAction(self.remove_entry_action)
         menu.addSeparator()
@@ -3538,7 +3589,7 @@ class PIDM(QMainWindow):
         menu.addAction(self.tr("Open File"), lambda: self.open_downloaded_file(dl_id)).setEnabled(
             dl_data["status"] == STATUS_COMPLETE and Path(dl_data["save_path"]).exists())
         menu.addAction(self.tr("Open Containing Folder"), lambda: self.open_download_folder(dl_id)).setEnabled(
-            Path(dl_data["save_path"]).exists())
+            Path(dl_data["save_path"]).parent.exists())
         menu.addSeparator()
         menu.addAction(self.tr("Properties..."), lambda: self.show_download_properties_dialog(dl_id))
 
