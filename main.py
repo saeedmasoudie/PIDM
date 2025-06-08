@@ -2516,7 +2516,7 @@ class PIDM(QMainWindow):
         self.setWindowTitle(self.tr("Python Internet Download Manager (PIDM)"))
         self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
         self.resize(900, 550)
-        self.app_version = "1.1.0"
+        self.app_version = "1.1.1"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
         self.is_quitting = False
