@@ -1366,6 +1366,63 @@ class UrlInputDialog(QDialog):
         return self.url, self.metadata, self.auth_tuple
 
 
+class SelectQueueDialog(QDialog):
+
+    def __init__(self, db_manager: DatabaseManager, settings_manager: SettingsManager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Select a Queue"))
+        self.setMinimumWidth(350)
+
+        self.db = db_manager
+        self.settings = settings_manager
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel(self.tr("Please select a queue for this download:")))
+
+        self.queue_combo = QComboBox()
+        self.load_queues()
+        layout.addWidget(self.queue_combo)
+
+        self.remember_queue_checkbox = QCheckBox(self.tr("Remember this choice for next time"))
+        layout.addWidget(self.remember_queue_checkbox)
+
+        if self.settings.get("remembered_queue_id_for_later"):
+            self.remember_queue_checkbox.setChecked(True)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def load_queues(self):
+        self.queue_combo.clear()
+        all_queues = self.db.get_all_queues()
+
+        if not all_queues:
+            self.queue_combo.addItem(self.tr("No queues available"), None)
+            self.queue_combo.setEnabled(False)
+            ok_button = self.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok)
+            if ok_button:
+                ok_button.setEnabled(False)
+        else:
+            for q in all_queues:
+                self.queue_combo.addItem(q["name"], q["id"])
+
+            remembered_id = self.settings.get("remembered_queue_id_for_later")
+            if remembered_id is not None:
+                idx = self.queue_combo.findData(remembered_id)
+                if idx != -1:
+                    self.queue_combo.setCurrentIndex(idx)
+
+    def get_selected_queue_info(self) -> tuple[int | None, bool]:
+        queue_id = self.queue_combo.currentData()
+        remember_choice = self.remember_queue_checkbox.isChecked()
+        return queue_id, remember_choice
+
+
 class NewDownloadDialog(QDialog):
     download_added = Signal()
 
@@ -1381,8 +1438,6 @@ class NewDownloadDialog(QDialog):
         self.guessed_filename = "downloaded_file"
         self.final_download_id = None
         self.accepted_action = None
-
-        # Variables to store data passed from other dialogs/processes
         self.auth_tuple = None
         self.custom_headers_for_download = None
 
@@ -1402,15 +1457,12 @@ class NewDownloadDialog(QDialog):
         self.save_path_combo.setEditable(True)
         self.save_path_combo.setMinimumWidth(300)
         self.save_path_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
         self.save_path_combo.activated.connect(self._on_save_path_selected)
 
         recent_paths = self.settings.get("recent_paths", [])
         if recent_paths: self.save_path_combo.addItems(recent_paths)
-
         default_dl_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-        if not self.save_path_combo.currentText():
-            self.save_path_combo.setCurrentText(default_dl_dir)
+        if not self.save_path_combo.currentText(): self.save_path_combo.setCurrentText(default_dl_dir)
 
         browse_button = QPushButton(self.tr("Browse..."))
         browse_button.setFixedWidth(100)
@@ -1422,58 +1474,43 @@ class NewDownloadDialog(QDialog):
 
         self.remember_path_checkbox = QCheckBox(self.tr("Remember this save directory as default"))
 
-        self.queue_combo = QComboBox()
-        self.load_queues_into_combo()
-        self.remember_queue_checkbox = QCheckBox(self.tr("Remember this queue for 'Download Later'"))
-
+        # <<< FIX: Queue selection widgets are removed from this dialog
         form_layout.addRow(self.tr("URL:"), self.url_display)
         form_layout.addRow(self.tr("Save As:"), save_path_layout)
         form_layout.addRow("", self.remember_path_checkbox)
         form_layout.addRow(self.tr("Description:"), self.description_input)
-        form_layout.addRow(self.tr("Add to Queue:"), self.queue_combo)
-        form_layout.addRow("", self.remember_queue_checkbox)
 
-        # --- Preview Widget Setup ---
+        # (The rest of the UI setup is the same as before)
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_widget.setFixedWidth(150)
-
         self.file_icon_label = QLabel()
         self.file_icon_label.setFixedSize(48, 48)
         self.file_icon_label.setAlignment(Qt.AlignCenter)
         self.file_icon_label.setScaledContents(False)
-
         self.file_name_preview_label = QLabel(self.tr("Filename: N/A"))
         self.file_name_preview_label.setAlignment(Qt.AlignCenter)
         self.file_name_preview_label.setWordWrap(True)
-
         self.file_size_preview_label = QLabel(self.tr("Size: N/A"))
         self.file_size_preview_label.setAlignment(Qt.AlignCenter)
-
         icon_wrapper = QHBoxLayout()
         icon_wrapper.addStretch()
         icon_wrapper.addWidget(self.file_icon_label)
         icon_wrapper.addStretch()
-
         preview_layout.addLayout(icon_wrapper)
         preview_layout.addWidget(self.file_name_preview_label)
         preview_layout.addWidget(self.file_size_preview_label)
         preview_layout.addStretch()
-
-        # --- Main Layout and Buttons ---
         top_layout = QHBoxLayout()
         top_layout.addLayout(form_layout, stretch=3)
         top_layout.addWidget(preview_widget, stretch=1)
-
         button_box = QDialogButtonBox()
         self.download_later_btn = button_box.addButton(self.tr("Download Later"), QDialogButtonBox.ActionRole)
         self.download_now_btn = button_box.addButton(self.tr("Download Now"), QDialogButtonBox.AcceptRole)
         cancel_btn = button_box.addButton(QDialogButtonBox.Cancel)
-
         self.download_later_btn.clicked.connect(self._handle_download_later)
         self.download_now_btn.clicked.connect(self._handle_download_now)
         cancel_btn.clicked.connect(self.reject)
-
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(12)
@@ -1600,33 +1637,30 @@ class NewDownloadDialog(QDialog):
         if selected_path:
             self.save_path_combo.setCurrentText(selected_path)
 
-    def _prepare_download_data(self, status_on_add: str) -> dict | None:
+    def _prepare_download_data(self, status_on_add: str, queue_id: int | None) -> dict | None:
+        """This method now accepts the queue_id as a parameter."""
         download_path_str = self.save_path_combo.currentText().strip()
         if not download_path_str:
             QMessageBox.warning(self, self.tr("Save Path Required"), self.tr("Please specify where to save the file."))
             return None
 
-        if self.remember_path_checkbox.isChecked(): self.settings.set("default_download_directory", str(Path(download_path_str).parent))
+        if self.remember_path_checkbox.isChecked():
+            self.settings.set("default_download_directory", str(Path(download_path_str).parent))
         self.settings.add_recent_path(str(Path(download_path_str).parent))
-        selected_queue_id = self.queue_combo.currentData()
-        if self.remember_queue_checkbox.isChecked(): self.settings.set("remembered_queue_id", selected_queue_id)
 
         queue_pos = 0
-        if selected_queue_id is not None:
-            items_in_q = self.db.get_downloads_in_queue(selected_queue_id)
+        if queue_id is not None:
+            items_in_q = self.db.get_downloads_in_queue(queue_id)
             queue_pos = max((d.get("queue_position", 0) for d in items_in_q), default=-1) + 1
 
-        # Prepare payload for the database
         data_for_db = {
             "url": self.fetched_metadata.get("final_url", self.url_display.text()),
             "file_name": Path(download_path_str).name,
             "save_path": download_path_str,
             "description": self.description_input.text().strip(),
             "status": status_on_add,
-            "queue_id": selected_queue_id,
+            "queue_id": queue_id,
             "queue_position": queue_pos,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "progress": 0, "speed": "", "eta": "", "bytes_downloaded": 0,
             "total_size": self.fetched_metadata.get("content_length", 0),
             "referrer": self.custom_headers_for_download.get("Referer") if self.custom_headers_for_download else None,
             "custom_headers": self.custom_headers_for_download,
@@ -1636,57 +1670,58 @@ class NewDownloadDialog(QDialog):
 
     def _handle_download_later(self):
         self.accepted_action = "later"
-        db_payload = self._prepare_download_data(STATUS_QUEUED)
-        if not db_payload: return
 
-        if db_payload.get("queue_id") is None:
-            main_queue = self.db.get_queue_by_name("Main Queue")
-            if main_queue:
-                db_payload["queue_id"] = main_queue["id"]
-                items_in_main_queue = self.db.get_downloads_in_queue(main_queue["id"])
-                db_payload["queue_position"] = max((d.get("queue_position", 0) for d in items_in_main_queue),
-                                                   default=-1) + 1 if items_in_main_queue else 0
-            else:
-                all_queues = self.db.get_all_queues()
-                if all_queues:
-                    db_payload["queue_id"] = all_queues[0]["id"]
-                    items_in_first_queue = self.db.get_downloads_in_queue(all_queues[0]["id"])
-                    db_payload["queue_position"] = max((d.get("queue_position", 0) for d in items_in_first_queue),
-                                                       default=-1) + 1 if items_in_first_queue else 0
-                    QMessageBox.information(self, self.tr("Queue Assigned"),
-                                            self.tr(f"No specific queue selected. Download added to '{all_queues[0]['name']}' queue."))
-                else:
-                    QMessageBox.warning(self, self.tr("No Queue Available"),
-                                        self.tr("Cannot 'Download Later' without an available queue. Please create a queue or select one if available."))
-                    return
+        # <<< FIX: Create and show the new queue selection dialog
+        queue_dialog = SelectQueueDialog(self.db, self.settings, self)
+        if queue_dialog.exec() != QDialog.Accepted:
+            return  # User cancelled the queue selection
+
+        selected_queue_id, remember_choice = queue_dialog.get_selected_queue_info()
+
+        if selected_queue_id is None:
+            QMessageBox.warning(self, self.tr("No Queue Selected"),
+                                self.tr("You must select a queue to use 'Download Later'."))
+            return
+
+        # Handle the "remember" checkbox setting
+        if remember_choice:
+            self.settings.set("remembered_queue_id_for_later", selected_queue_id)
+        else:
+            # If they uncheck it, forget the setting
+            self.settings.set("remembered_queue_id_for_later", None)
+
+        # Now that we have a queue_id, prepare the payload with QUEUED status
+        db_payload = self._prepare_download_data(STATUS_QUEUED, selected_queue_id)
+        if not db_payload: return
 
         self.final_download_id = self.db.add_download(db_payload)
         if self.final_download_id == -1:
             QMessageBox.warning(self, self.tr("Error Adding Download"),
-                                self.tr("This download (URL and save path) might already exist or another error occurred."))
+                                self.tr(
+                                    "This download (URL and save path) might already exist or another error occurred."))
             return
+
         self.download_added.emit()
         super().accept()
 
     def _handle_download_now(self):
         self.accepted_action = "now"
-        current_queue_id = self.queue_combo.currentData()
-        status = STATUS_CONNECTING if current_queue_id is None else STATUS_QUEUED
 
-        db_payload = self._prepare_download_data(status)
+        # <<< FIX: "Download Now" is now simple: it never uses a queue.
+        db_payload = self._prepare_download_data(STATUS_CONNECTING, queue_id=None)
         if not db_payload: return
 
         self.final_download_id = self.db.add_download(db_payload)
         if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Error Adding Download"), self.tr(
-                "This download (URL and save path) might already exist or another error occurred."))
+            QMessageBox.warning(self, self.tr("Error Adding Download"),
+                                self.tr(
+                                    "This download (URL and save path) might already exist or another error occurred."))
             return
 
         self.download_added.emit()
         super().accept()
 
     def get_final_download_data(self) -> tuple[int | None, str | None]:
-        """Returns the ID of the new download and the action taken ('now' or 'later')."""
         if self.result() == QDialog.Accepted and self.final_download_id is not None:
             return self.final_download_id, self.accepted_action
         return None, None
@@ -2480,7 +2515,7 @@ class PIDM(QMainWindow):
         super().__init__()
         self.setWindowTitle(self.tr("Python Internet Download Manager (PIDM)"))
         self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
-        self.resize(1200, 700)
+        self.resize(900, 550)
         self.app_version = "1.1.0"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
@@ -2992,7 +3027,6 @@ class PIDM(QMainWindow):
             return
 
         new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
-        new_dl_dialog.download_added.connect(self.refresh_download_table_with_current_filter)
         new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
         new_dl_dialog.fetch_metadata_async(url, auth_tuple, custom_headers=None)
 
@@ -3001,12 +3035,13 @@ class PIDM(QMainWindow):
 
             if added_dl_id:
                 db_payload = self.db.get_download_by_id(added_dl_id)
-
-                if not db_payload:  # Safety check
+                if not db_payload:
                     logger.error(f"Failed to retrieve new download {added_dl_id} from DB.")
                     return
 
-                # Check if the download should start immediately
+                self._add_download_to_table(db_payload)
+                self.download_table.scrollToBottom()
+
                 if db_payload.get("status") == STATUS_CONNECTING:
                     self._start_download_worker(added_dl_id)
                 elif accepted_how == "now" and db_payload.get("queue_id") is not None:
@@ -3189,41 +3224,40 @@ class PIDM(QMainWindow):
 
     def try_auto_start_from_queue(self, queue_id: int):
         queue_settings = self.db.get_queue_by_id(queue_id)
-        if not queue_settings:
+        if not queue_settings or not queue_settings.get("enabled", True):
             return
 
         max_concurrent = queue_settings.get("max_concurrent", 1)
 
         active_in_this_queue = sum(
             1 for wid, info in self.active_workers.items()
-            if self.db.get_download_by_id(wid).get("queue_id") == queue_id and not info["worker"]._is_paused
+            if self.db.get_download_by_id(wid) and self.db.get_download_by_id(wid).get("queue_id") == queue_id and not
+            info["worker"]._is_paused
         )
 
-        pending_downloads = self.db.get_downloads_in_queue(queue_id)
+        resumable_statuses = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE]
+        pending_downloads = [d for d in self.db.get_downloads_in_queue(queue_id) if
+                             d['status'] in resumable_statuses or "Error" in d['status']]
 
         for dl_item in pending_downloads:
             if active_in_this_queue >= max_concurrent:
                 break
 
             dl_id = dl_item["id"]
-            worker_info = self.active_workers.get(dl_id)
 
-            if worker_info:
-                worker = worker_info["worker"]
+            if dl_id in self.active_workers:
+                worker = self.active_workers[dl_id]["worker"]
                 if worker._is_paused:
-                    logger.debug(f"[AutoStart] Resuming paused worker ID {dl_id}")
+                    logger.debug(f"[AutoStart] Resuming paused worker ID {dl_id} from queue.")
                     worker.resume()
                     active_in_this_queue += 1
-            elif dl_item["status"] in [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE]:
-                logger.debug(f"[AutoStart] Starting new worker ID {dl_id}")
-                self._start_download_worker(
-                    dl_id,
-                    dl_item["url"],
-                    dl_item["save_path"],
-                    dl_item.get("bytes_downloaded", 0),
-                    dl_item.get("total_size", 0),
-                    None
-                )
+                continue
+
+            if dl_item["status"] in resumable_statuses or "Error" in dl_item["status"]:
+                logger.debug(f"[AutoStart] Starting new worker for ID {dl_id} from queue.")
+
+                self._start_download_worker(dl_id)
+
                 active_in_this_queue += 1
 
     @Slot()
