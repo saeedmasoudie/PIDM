@@ -1196,7 +1196,7 @@ class UpdateCheckThread(QThread):
 class ProxyServer(QObject):
     link_received = Signal(dict)
 
-    def __init__(self, start_port=9999, max_tries=10):
+    def __init__(self, start_port=49152, max_tries=10):
         super().__init__()
         self.server = None
         self.thread = None
@@ -1204,18 +1204,20 @@ class ProxyServer(QObject):
         self._start_server(start_port, max_tries)
 
     def _start_server(self, start_port, max_tries):
-        for port in range(start_port, start_port + max_tries):
+        for port_to_try in range(start_port, start_port + max_tries):
             try:
                 handler = self._make_handler()
-                self.server = HTTPServer(("127.0.0.1", port), handler)
-                self.port = port
+                self.server = HTTPServer(("127.0.0.1", port_to_try), handler)
+                self.port = port_to_try
                 self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
                 self.thread.start()
-                print(f"[ProxyServer] Listening on http://127.0.0.1:{port}")
+                logger.info(f"[ProxyServer] Listening on http://127.0.0.1:{self.port}")
                 return
             except OSError:
+                logger.warning(f"[ProxyServer] Port {port_to_try} is already in use. Trying next one.")
                 continue
-        print("[ProxyServer] Failed to bind to any port.")
+        logger.error("[ProxyServer] FATAL: Failed to bind to any port in the range.")
+        self.server = None
 
     def _make_handler(self):
         outer_self = self
@@ -1225,12 +1227,20 @@ class ProxyServer(QObject):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.end_headers()
 
             def do_OPTIONS(self):
                 self._set_headers()
+
+            def do_GET(self):
+                if self.path == '/api/ping':
+                    self._set_headers(200)
+                    self.wfile.write(b'{"status":"pidm_active"}')
+                else:
+                    self._set_headers(404)
+                    self.wfile.write(b'{"error":"not_found"}')
 
             def do_POST(self):
                 if self.path != "/api/download":
@@ -1243,14 +1253,10 @@ class ProxyServer(QObject):
 
                 try:
                     data = json.loads(raw_data)
-                    url = data.get("url")
-
-                    if url:
+                    if "url" in data:
                         download_info = {
-                            "url": url,
-                            "cookies": data.get("cookies"),
-                            "referrer": data.get("referrer"),
-                            "userAgent": data.get("userAgent")
+                            "url": data.get("url"), "cookies": data.get("cookies"),
+                            "referrer": data.get("referrer"), "userAgent": data.get("userAgent")
                         }
                         outer_self.link_received.emit(download_info)
                         self._set_headers(200)
@@ -1259,14 +1265,11 @@ class ProxyServer(QObject):
                         self._set_headers(400)
                         self.wfile.write(b'{"error":"missing url in payload"}')
                 except json.JSONDecodeError:
-                    self._set_headers(400)
-                    self.wfile.write(b'{"error":"invalid json"}')
+                    self._set_headers(400); self.wfile.write(b'{"error":"invalid json"}')
                 except Exception as e:
-                    self._set_headers(500)
-                    self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
+                    self._set_headers(500); self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
 
             def log_message(self, format, *args):
-                logger.debug(f"[ProxyServer][Handler] {format % args}")
                 return
 
         return Handler
