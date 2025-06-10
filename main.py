@@ -143,6 +143,15 @@ class DatabaseManager:
             logger.error(f"SQLite error during schema migration: {e}")
 
     def add_download(self, data: dict) -> int:
+        logger.info(f"[DEBUG-REFERRER] 1. Received by add_download: '{data.get('referrer')}'")
+        referrer_value = data.get("referrer")
+
+        if referrer_value and len(referrer_value) < 10:
+            logger.warning(f"Rejecting short/invalid referrer '{referrer_value}'. Storing as NULL instead.")
+            referrer_value = None
+
+        logger.info(f"[DEBUG-REFERRER] 2. Value being saved to DB: '{referrer_value}'")
+
         cur = self.conn.cursor()
         try:
             custom_headers_dict = data.get("custom_headers")
@@ -165,7 +174,8 @@ class DatabaseManager:
                 data.get("queue_id"), data.get("queue_position", 0),
                 data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 data.get("bytes_downloaded", 0), data.get("total_size", 0),
-                data.get("referrer"), custom_headers_json, auth_json
+                referrer_value,
+                custom_headers_json, auth_json
             ))
             self.conn.commit()
             return cur.lastrowid
