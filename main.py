@@ -75,6 +75,10 @@ APP_RESTART_CODE = 1000
 logger = setup_logger()
 
 
+class DuplicateDownloadError(Exception):
+    """Custom exception raised when trying to add a download that already exists."""
+    pass
+
 class DatabaseManager:
     def __init__(self, db_path=None):
         if db_path is None:
@@ -181,10 +185,8 @@ class DatabaseManager:
             return cur.lastrowid
         except sqlite3.IntegrityError:
             logger.warning(
-                f"IntegrityError: Download with URL {data['url']} and save_path {data['save_path']} likely already exists.")
-            cur.execute("SELECT id FROM downloads WHERE url = ? AND save_path = ?", (data["url"], data["save_path"]))
-            row = cur.fetchone();
-            return row["id"] if row else -1
+                f"IntegrityError (Duplicate): Download with URL {data['url']} and path {data['save_path']} already exists.")
+            raise DuplicateDownloadError("Duplicate download detected.")
         except sqlite3.Error as e:
             logger.error(f"SQLite error in add_download: {e}");
             return -1
@@ -1205,6 +1207,7 @@ class UpdateCheckThread(QThread):
 
 class ProxyServer(QObject):
     link_received = Signal(dict)
+    proxy_startup_failed = Signal(str)
 
     def __init__(self, start_port=49152, max_tries=10):
         super().__init__()
@@ -1226,8 +1229,13 @@ class ProxyServer(QObject):
             except OSError:
                 logger.warning(f"[ProxyServer] Port {port_to_try} is already in use. Trying next one.")
                 continue
-        logger.error("[ProxyServer] FATAL: Failed to bind to any port in the range.")
+
         self.server = None
+        error_message = self.tr("Could not bind to any port in the range {0}-{1}.").format(
+            start_port, start_port + max_tries - 1
+        )
+        logger.error(f"[ProxyServer] FATAL: {error_message}")
+        self.proxy_startup_failed.emit(error_message)
 
     def _make_handler(self):
         outer_self = self
@@ -1487,13 +1495,11 @@ class NewDownloadDialog(QDialog):
 
         self.remember_path_checkbox = QCheckBox(self.tr("Remember this save directory as default"))
 
-        # <<< FIX: Queue selection widgets are removed from this dialog
         form_layout.addRow(self.tr("URL:"), self.url_display)
         form_layout.addRow(self.tr("Save As:"), save_path_layout)
         form_layout.addRow("", self.remember_path_checkbox)
         form_layout.addRow(self.tr("Description:"), self.description_input)
 
-        # (The rest of the UI setup is the same as before)
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_widget.setFixedWidth(150)
@@ -1531,6 +1537,21 @@ class NewDownloadDialog(QDialog):
         main_layout.addSpacing(10)
         main_layout.addWidget(button_box)
 
+    def _add_to_database_and_close(self, db_payload):
+        if not db_payload:
+            return
+        try:
+            self.final_download_id = self.db.add_download(db_payload)
+            self.download_added.emit()
+            super().accept()
+        except DuplicateDownloadError:
+            QMessageBox.warning(self, self.tr("Duplicate Download"),
+                                self.tr("This download (URL and save path) already exists in the list."))
+        except Exception as e:
+            logger.error(f"An unexpected error occurred when adding download: {e}")
+            QMessageBox.critical(self, self.tr("Database Error"),
+                                 self.tr("An unexpected error occurred. Please check the logs."))
+
     def _on_save_path_selected(self, index: int):
         """When a user selects a recent path, combine it with the current filename."""
         selected_path_str = self.save_path_combo.itemText(index)
@@ -1540,20 +1561,6 @@ class NewDownloadDialog(QDialog):
             current_filename = self.fetched_metadata.get("filename") or self.guessed_filename
             new_full_path = str(path_obj / current_filename)
             self.save_path_combo.setCurrentText(new_full_path)
-
-    def load_queues_into_combo(self):
-        self.queue_combo.clear()
-        self.queue_combo.addItem(self.tr("None (Start Immediately)"), None)
-        queues = self.db.get_all_queues()
-        for q in queues:
-            self.queue_combo.addItem(q["name"], q["id"])
-
-        remembered_queue_id = self.settings.get("remembered_queue_id")
-        if remembered_queue_id is not None:
-            idx = self.queue_combo.findData(remembered_queue_id)
-            if idx != -1:
-                self.queue_combo.setCurrentIndex(idx)
-                self.remember_queue_checkbox.setChecked(True)
 
     def fetch_metadata_async(self, url: str, auth: tuple | None = None, custom_headers=None):
         self.custom_headers_for_download = custom_headers
@@ -1683,56 +1690,29 @@ class NewDownloadDialog(QDialog):
 
     def _handle_download_later(self):
         self.accepted_action = "later"
-
-        # <<< FIX: Create and show the new queue selection dialog
         queue_dialog = SelectQueueDialog(self.db, self.settings, self)
         if queue_dialog.exec() != QDialog.Accepted:
-            return  # User cancelled the queue selection
+            return
 
         selected_queue_id, remember_choice = queue_dialog.get_selected_queue_info()
-
         if selected_queue_id is None:
             QMessageBox.warning(self, self.tr("No Queue Selected"),
                                 self.tr("You must select a queue to use 'Download Later'."))
             return
 
-        # Handle the "remember" checkbox setting
         if remember_choice:
             self.settings.set("remembered_queue_id_for_later", selected_queue_id)
         else:
-            # If they uncheck it, forget the setting
             self.settings.set("remembered_queue_id_for_later", None)
 
-        # Now that we have a queue_id, prepare the payload with QUEUED status
         db_payload = self._prepare_download_data(STATUS_QUEUED, selected_queue_id)
-        if not db_payload: return
-
-        self.final_download_id = self.db.add_download(db_payload)
-        if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Error Adding Download"),
-                                self.tr(
-                                    "This download (URL and save path) might already exist or another error occurred."))
-            return
-
-        self.download_added.emit()
-        super().accept()
+        self._add_to_database_and_close(db_payload)
 
     def _handle_download_now(self):
         self.accepted_action = "now"
 
-        # <<< FIX: "Download Now" is now simple: it never uses a queue.
         db_payload = self._prepare_download_data(STATUS_CONNECTING, queue_id=None)
-        if not db_payload: return
-
-        self.final_download_id = self.db.add_download(db_payload)
-        if self.final_download_id == -1:
-            QMessageBox.warning(self, self.tr("Error Adding Download"),
-                                self.tr(
-                                    "This download (URL and save path) might already exist or another error occurred."))
-            return
-
-        self.download_added.emit()
-        super().accept()
+        self._add_to_database_and_close(db_payload)
 
     def get_final_download_data(self) -> tuple[int | None, str | None]:
         if self.result() == QDialog.Accepted and self.final_download_id is not None:
@@ -2529,7 +2509,7 @@ class PIDM(QMainWindow):
         self.setWindowTitle(self.tr("Python Internet Download Manager (PIDM)"))
         self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
         self.resize(900, 550)
-        self.app_version = "1.1.1"
+        self.app_version = "1.1.2"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
         self.is_quitting = False
@@ -2553,6 +2533,10 @@ class PIDM(QMainWindow):
         self.init_category_tree()
         self.load_downloads_from_db()
         self.update_action_buttons_state()
+
+        self.proxy = ProxyServer()
+        self.proxy.proxy_startup_failed.connect(self.handle_proxy_startup_failure)
+        self.proxy.link_received.connect(self.handle_link_received)
 
         self.scheduler_thread = QueueSchedulerThread(self.db)
         self.scheduler_thread.start_queue_signal.connect(self.handle_start_queue_by_id)
@@ -3028,40 +3012,6 @@ class PIDM(QMainWindow):
 
         self._refresh_toolbar_icons()
 
-    @Slot()
-    def handle_new_download_dialog(self):
-        url_dialog = UrlInputDialog(self)
-        if url_dialog.exec() != QDialog.Accepted:
-            return
-
-        url, metadata, auth_tuple = url_dialog.get_url_and_metadata()
-        if not url:
-            QMessageBox.warning(self, self.tr("Error"), self.tr("A valid URL is required."))
-            return
-
-        new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
-        new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
-        new_dl_dialog.fetch_metadata_async(url, auth_tuple, custom_headers=None)
-
-        if new_dl_dialog.exec() == QDialog.Accepted:
-            added_dl_id, accepted_how = new_dl_dialog.get_final_download_data()
-
-            if added_dl_id:
-                db_payload = self.db.get_download_by_id(added_dl_id)
-                if not db_payload:
-                    logger.error(f"Failed to retrieve new download {added_dl_id} from DB.")
-                    return
-
-                self._add_download_to_table(db_payload)
-                self.download_table.scrollToBottom()
-
-                if db_payload.get("status") == STATUS_CONNECTING:
-                    self._start_download_worker(added_dl_id)
-                elif accepted_how == "now" and db_payload.get("queue_id") is not None:
-                    self.try_auto_start_from_queue(db_payload["queue_id"])
-
-            self.update_action_buttons_state()
-
     def _start_download_worker(self, download_id: int):
         """
         The single, robust entry point for starting or resuming any download.
@@ -3178,6 +3128,20 @@ class PIDM(QMainWindow):
             new_size_str = format_size(total_bytes)
             if total_bytes > 0 and current_size_item and current_size_item.text() != new_size_str:
                 current_size_item.setText(new_size_str)
+
+    @Slot(str)
+    def handle_proxy_startup_failure(self, error_message):
+        """Shows a warning popup when the browser listener fails to start."""
+        QMessageBox.warning(
+            self,
+            self.tr("Browser Integration Failed"),
+            self.tr(
+                "PIDM could not start the listener required for browser integration. "
+                "This usually means another application (or another instance of PIDM) "
+                "is using the required ports.\n\n"
+                "You can still use the application to add downloads manually."
+            )
+        )
 
     @Slot(str, str)
     def _show_update_dialog(self, new_version: str, url: str):
@@ -3586,6 +3550,74 @@ class PIDM(QMainWindow):
         dl_id = self._get_selected_download_id()
         if dl_id is not None:
             self.show_download_properties_dialog(dl_id)
+
+    @Slot(dict)
+    def handle_link_received(self, download_info: dict):
+        """
+        This is the central handler for all incoming downloads.
+        It now ensures the dialog window itself is brought to the front.
+        """
+
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+        # Extract data from the incoming link info
+        url = download_info.get("url")
+        cookies = download_info.get("cookies")
+        referrer = download_info.get("referrer")
+        user_agent = download_info.get("userAgent")
+        metadata = None
+        auth_tuple = None
+
+        # If no URL was passed (e.g., from the "Add URL" button), show the dialog to get one.
+        if not url:
+            url_dialog = UrlInputDialog(self)
+            if url_dialog.exec() != QDialog.Accepted:
+                return
+            url, metadata, auth_tuple = url_dialog.get_url_and_metadata()
+            custom_headers = None  # No custom headers for manual adds
+        else:
+            # For extension links, build the headers from the received info.
+            custom_headers = {}
+            if cookies: custom_headers["Cookie"] = cookies
+            if referrer: custom_headers["Referer"] = referrer
+            if user_agent: custom_headers["User-Agent"] = user_agent
+
+        if not url:
+            QMessageBox.warning(self, self.tr("Error"), self.tr("A valid URL is required."))
+            return
+
+        # Create and prepare the dialog
+        new_dl_dialog = NewDownloadDialog(self.settings, self.db, self)
+        new_dl_dialog.set_initial_data(url, metadata, auth_tuple)
+        new_dl_dialog.fetch_metadata_async(url, auth_tuple, custom_headers)
+        new_dl_dialog.setWindowFlags(new_dl_dialog.windowFlags() | Qt.WindowStaysOnTopHint)
+        new_dl_dialog.show()
+        new_dl_dialog.raise_()
+        new_dl_dialog.activateWindow()
+
+        if new_dl_dialog.result() == QDialog.Accepted or new_dl_dialog.exec() == QDialog.Accepted:
+            added_dl_id, accepted_how = new_dl_dialog.get_final_download_data()
+            if added_dl_id:
+                db_payload = self.db.get_download_by_id(added_dl_id)
+                if not db_payload:
+                    logger.error(f"Could not retrieve newly added download {added_dl_id}")
+                    return
+                self._add_download_to_table(db_payload)
+                self.download_table.scrollToBottom()
+                if db_payload.get("status") == STATUS_CONNECTING:
+                    self._start_download_worker(added_dl_id)
+                elif accepted_how == "now" and db_payload.get("queue_id") is not None:
+                    self.try_auto_start_from_queue(db_payload["queue_id"])
+
+        self.update_action_buttons_state()
+
+    @Slot()
+    def handle_new_download_dialog(self):
+        """Handles the 'Add URL' button by calling the main link handler with empty data."""
+        self.handle_link_received({})
 
     @Slot(QPoint)
     def show_download_context_menu(self, pos: QPoint):
@@ -4047,10 +4079,6 @@ if __name__ == "__main__":
 
     if not setup_single_instance():
         sys.exit(0)
-
-    # Start the local proxy server and hook to download dialog
-    proxy = ProxyServer()
-    proxy.link_received.connect(lambda url: show_download_dialog(url, settings, db, parent=win))
 
     win.show()
     sys.exit(app.exec())
