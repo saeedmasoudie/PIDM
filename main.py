@@ -1620,31 +1620,26 @@ class NewDownloadDialog(QDialog):
             self.save_path_combo.setCurrentText(str(Path(default_dir) / filename))
 
     def select_save_path(self):
+        authoritative_filename = self.fetched_metadata.get("filename") or self.guessed_filename
         current_path_str = self.save_path_combo.currentText().strip()
-        current_path_obj = Path(current_path_str if current_path_str else ".")
-
-        start_dir = str(current_path_obj.parent) if current_path_obj.name else \
-            self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-
-        filename_suggestion = current_path_obj.name or \
-                              self.fetched_metadata.get("filename") or \
-                              self.guessed_filename
+        start_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
+        if current_path_str:
+            p = Path(current_path_str)
+            if p.name:
+                start_dir = str(p.parent)
+            else:
+                start_dir = str(p)
 
         if not Path(start_dir).is_dir():
-            start_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-            if not Path(start_dir).is_dir():
-                start_dir = str(Path.home() / "Downloads")
-                Path(start_dir).mkdir(parents=True, exist_ok=True)
+            start_dir = str(Path.home() / "Downloads")
+            Path(start_dir).mkdir(parents=True, exist_ok=True)
 
-        target_path_suggestion = str(Path(start_dir) / filename_suggestion)
-
-        ext = Path(filename_suggestion).suffix
+        target_path_suggestion = str(Path(start_dir) / authoritative_filename)
+        ext = Path(authoritative_filename).suffix
         mime_type = self.fetched_metadata.get("content_type", "application/octet-stream")
         if not ext and mime_type != "application/octet-stream":
             guessed_ext = mimetypes.guess_extension(mime_type)
-            if guessed_ext:
-                ext = guessed_ext
-
+            if guessed_ext: ext = guessed_ext
         file_filter = f"{mime_type} (*{ext})" if ext else self.tr("All Files (*)")
 
         selected_path, _ = QFileDialog.getSaveFileName(
