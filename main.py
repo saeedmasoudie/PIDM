@@ -552,7 +552,9 @@ class DownloadWorker(QThread):
         self._is_paused = False
         self._is_cancelled = False
         self._is_running = False
-        self._db_write_interval = 1.0
+        self._db_write_interval = 2.0
+        self._min_bytes_for_db_write = 1024 * 1024 * 5
+        self._last_db_write_bytes = initial_downloaded_bytes
 
         self._last_timestamp = time.time()
         self._last_downloaded_bytes_for_speed_calc = initial_downloaded_bytes
@@ -788,7 +790,7 @@ class DownloadWorker(QThread):
                     self.status_changed.emit(STATUS_DOWNLOADING)
                     self.db.update_status(self.download_id, STATUS_DOWNLOADING)
 
-                chunk_size = 1024 * 64  # 64KB
+                chunk_size = 1024 * 512  # 512KB
                 with open(self.save_path, file_mode) as file:
                     for chunk in response.iter_bytes(chunk_size=chunk_size):
                         if self._is_cancelled:
@@ -822,13 +824,17 @@ class DownloadWorker(QThread):
                                                        self._total_size)
 
                         now = time.time()
-                        if now - self._last_db_write_time >= self._db_write_interval:
+                        bytes_since_last_db_write = self._downloaded_bytes - self._last_db_write_bytes
+
+                        if (now - self._last_db_write_time >= self._db_write_interval) or \
+                                (bytes_since_last_db_write >= self._min_bytes_for_db_write):
                             self.db.update_download_progress_details(self.download_id, max(0, progress_percent),
                                                                      self._downloaded_bytes)
                             self._last_db_write_time = now
+                            self._last_db_write_bytes = self._downloaded_bytes
                             if self._total_size > 0:
-                                if not self._is_cancelled: self.resume_helper.write(self._downloaded_bytes,
-                                                                                    self._total_size, self.url)
+                                if not self._is_cancelled:
+                                    self.resume_helper.write(self._downloaded_bytes, self._total_size, self.url)
 
                 if self._is_cancelled:
                     self.status_changed.emit(STATUS_CANCELLED)
@@ -4032,12 +4038,6 @@ def get_asset_path(relative_path: str) -> str:
     parent_dir = Path(__file__).parent
     asset_path = parent_dir / relative_path
     return str(asset_path)
-
-def is_native_messaging():
-    try:
-        return sys.stdin and not sys.stdin.isatty()
-    except Exception:
-        return False
 
 def guess_filename_from_url(url: str) -> str:
     parsed = urlparse(url)
