@@ -1037,7 +1037,7 @@ class MetadataFetcher(QThread):
         self.timeout.emit()
 
     def _fetch_metadata_attempt(self, url_to_fetch):
-        request_headers = {"User-Agent": "PIDM/1.0 Mozilla/5.0"}
+        request_headers = {"User-Agent": "PIDM/1.1 Mozilla/5.0"}
         if self.custom_headers:
             request_headers.update(self.custom_headers)
 
@@ -1048,26 +1048,13 @@ class MetadataFetcher(QThread):
             transport = httpx.HTTPTransport(retries=1)
             with httpx.Client(auth=auth_param, follow_redirects=True, timeout=self.max_seconds,
                               transport=transport) as client:
-                logging.debug(
-                    f"[MetadataFetcher] Sending HEAD request to: {url_to_fetch} with headers: {request_headers}")
-                response = client.head(url_to_fetch, headers=request_headers)
-                response.raise_for_status()
-                logging.debug(f"[MetadataFetcher] HEAD response from {response.url} headers: {dict(response.headers)}")
-
-                content_length_head = response.headers.get("Content-Length")
-                if content_length_head and int(content_length_head) > 0:
-                    logging.debug(f"[MetadataFetcher] Using HEAD data for {url_to_fetch}")
-                    return self._parse_headers(response.headers, str(response.url))
-
-                logging.warning(
-                    f"[MetadataFetcher] HEAD lacked positive Content-Length (got: {content_length_head}), trying partial GET for {url_to_fetch}")
 
                 headers_for_get = request_headers.copy()
                 headers_for_get["Range"] = "bytes=0-0"
 
                 logging.debug(
                     f"[MetadataFetcher] Sending GET (range 0-0) request to: {url_to_fetch} with headers: {headers_for_get}")
-                response_get = client.get(url_to_fetch, headers=headers_for_get, stream=True)
+                response_get = client.get(url_to_fetch, headers=headers_for_get)
                 response_get.raise_for_status()
                 logging.debug(
                     f"[MetadataFetcher] GET (range 0-0) response from {response_get.url} headers: {dict(response_get.headers)}")
