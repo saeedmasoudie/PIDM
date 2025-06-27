@@ -488,40 +488,37 @@ class SettingsManager:
 
 
 class ResumeFileHandler:
-    def __init__(self, file_path: str | Path):
-        self.save_path = Path(file_path)
-        self.resume_path = self.save_path.with_suffix(self.save_path.suffix + ".resume")
+    def __init__(self, file_path: Path):
+        self.resume_file_path = Path(str(file_path) + ".resume")
 
-    def write(self, downloaded_bytes: int, total_size: int, url: str):
-        resume_info = {
-            "downloaded_bytes": downloaded_bytes,
-            "total_size": total_size,
-            "url": url,
-            "save_path": str(self.save_path),
-            "timestamp": time.time()
-        }
+    def write(self, total_size: int, url: str, segments: list):
         try:
-            with open(self.resume_path, "w") as f:
-                json.dump(resume_info, f)
-            return True
+            data = {
+                "total_size": total_size,
+                "url": url,
+                "timestamp": datetime.now().isoformat(),
+                "segments": segments
+            }
+            with open(self.resume_file_path, "w") as f:
+                json.dump(data, f)
         except Exception as e:
-            logger.error(f"[ResumeFile] Failed to write resume file: {e}")
-            return False
+            logger.error(f"Error writing resume file {self.resume_file_path}: {e}")
 
-    def read(self) -> dict | None:
-        if not self.resume_path.exists(): return None
+    def read(self) -> dict:
         try:
-            with open(self.resume_path, "r") as f:
-                return json.load(f)
+            if self.resume_file_path.exists():
+                with open(self.resume_file_path, "r") as f:
+                    return json.load(f)
         except Exception as e:
-            logger.error(f"[ResumeFile] Failed to read resume file: {e}")
-            return None
+            logger.error(f"Error reading resume file {self.resume_file_path}: {e}")
+        return {}
 
     def delete(self):
         try:
-            if self.resume_path.exists(): self.resume_path.unlink(missing_ok=True)
+            if self.resume_file_path.exists():
+                self.resume_file_path.unlink()
         except Exception as e:
-            logger.error(f"[ResumeFile] Failed to delete resume file: {e}")
+            logger.error(f"Error deleting resume file {self.resume_file_path}: {e}")
 
 
 class DownloadWorker(QThread):
@@ -530,6 +527,8 @@ class DownloadWorker(QThread):
     finished_successfully = Signal(str)
     total_size_known = Signal(int)
     global_speed_limit_bps = None
+
+    NUM_CONNECTIONS = 5
 
     def __init__(self, download_id: int, db_manager, url: str, save_path: str,
                  initial_downloaded_bytes: int = 0, total_file_size: int = 0,
@@ -545,8 +544,6 @@ class DownloadWorker(QThread):
         self._last_db_write_time = time.time()
         self.resume_helper = ResumeFileHandler(self.save_path)
 
-        self.httpx_response = None
-        self.httpx_client = None
         self._total_size = total_file_size
         self._downloaded_bytes = initial_downloaded_bytes
         self._is_paused = False
@@ -562,6 +559,13 @@ class DownloadWorker(QThread):
         self._eta_seconds = float('inf')
         self._last_timestamp_for_limit = time.time()
 
+        self._segments = []
+        self._file_write_lock = threading.Lock()
+        self._segment_threads = []
+
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+
     @classmethod
     def set_global_speed_limit(cls, limit_kbps: int):
         if limit_kbps <= 0:
@@ -572,6 +576,7 @@ class DownloadWorker(QThread):
     def pause(self):
         if self._is_running and not self._is_paused:
             self._is_paused = True
+            self._pause_event.clear()
             self.status_changed.emit(STATUS_PAUSED)
             progress_percent = int((self._downloaded_bytes / self._total_size) * 100) if self._total_size > 0 else 0
             self.db.update_status_and_progress_on_pause(
@@ -582,6 +587,7 @@ class DownloadWorker(QThread):
     def resume(self):
         if self._is_running and self._is_paused:
             self._is_paused = False
+            self._pause_event.set()
             self._last_timestamp = time.time()
             self._last_downloaded_bytes_for_speed_calc = self._downloaded_bytes
             self._last_timestamp_for_limit = time.time()
@@ -591,22 +597,26 @@ class DownloadWorker(QThread):
 
     def cancel(self):
         self._is_cancelled = True
+        self._pause_event.set()
         logger.info(f"DownloadWorker {self.download_id} cancel called.")
 
-        # Attempt to close network resources if they exist
-        if self.httpx_response:
-            try:
-                self.httpx_response.close()
-                logger.info(f"DownloadWorker {self.download_id} closed httpx response object during cancel.")
-            except Exception as e:
-                logger.warning(f"DownloadWorker {self.download_id} error closing httpx response during cancel: {e}")
+        for segment_thread in self._segment_threads:
+            if segment_thread.is_alive():
+                # We'll rely on the _is_cancelled flag within _download_segment
+                # to exit gracefully. No direct _stop_event needed if _is_cancelled is checked.
+                pass
 
-        if self.httpx_client:
-            try:
-                self.httpx_client.close()
-                logger.info(f"DownloadWorker {self.download_id} closed httpx client during cancel.")
-            except Exception as e:
-                logger.warning(f"DownloadWorker {self.download_id} error closing httpx client during cancel: {e}")
+        # Give some time for threads to react to cancellation
+        self.msleep(100)
+
+        # Join threads here to ensure they complete their cleanup before DownloadWorker exits
+        for thread in self._segment_threads:
+            if thread.is_alive():
+                logger.debug(f"Download {self.download_id}: Waiting for segment thread to join on cancel.")
+                thread.join(timeout=1.0)
+                if thread.is_alive():
+                    logger.warning(
+                        f"Download {self.download_id}: Segment thread did not join on cancel, possibly stuck.")
 
         if self.isRunning():
             self.quit()
@@ -619,7 +629,6 @@ class DownloadWorker(QThread):
         else:
             logger.info(
                 f"DownloadWorker {self.download_id} was not running (or already finished) when cancel was called.")
-
 
         download_entry = self.db.get_download_by_id(self.download_id)
         if self.save_path.exists() and (not download_entry or download_entry.get('status') != STATUS_COMPLETE):
@@ -635,6 +644,10 @@ class DownloadWorker(QThread):
         self.status_changed.emit(STATUS_CANCELLED)
 
     def _calculate_speed_and_eta(self):
+        # This will now sum up downloaded_bytes from all segments
+        current_downloaded_bytes = sum(s['downloaded_bytes'] for s in self._segments) if self._segments else 0
+        self._downloaded_bytes = current_downloaded_bytes
+
         current_time = time.time()
         time_delta = current_time - self._last_timestamp
 
@@ -673,8 +686,114 @@ class DownloadWorker(QThread):
                 "%M:%S", time.gmtime(self._eta_seconds))
         return speed_str, eta_str
 
+    def _download_segment(self, segment_index: int, start_byte: int, end_byte: int):
+        """
+        Downloads a specific segment of the file.
+        This method will be run in a separate thread.
+        """
+        current_segment_downloaded_bytes = 0
+        segment_start_offset = start_byte
+
+        with self._file_write_lock:
+            self._segments[segment_index]['downloaded_bytes'] = current_segment_downloaded_bytes
+            self._segments[segment_index]['status'] = STATUS_CONNECTING
+
+        logger.debug(f"Segment {segment_index}: Starting download from {start_byte} to {end_byte}")
+
+        segment_client = None
+        try:
+            timeout_config = httpx.Timeout(30.0, connect=15.0)
+            segment_client = httpx.Client(auth=self.auth, timeout=timeout_config, follow_redirects=True)
+
+            effective_headers = {
+                "User-Agent": "PIDM/1.0 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            effective_headers.update(self.custom_headers)
+            request_start_byte = segment_start_offset + current_segment_downloaded_bytes
+            headers_for_range = effective_headers.copy()
+            headers_for_range["Range"] = f"bytes={request_start_byte}-{end_byte}"
+
+            with segment_client.stream("GET", self.url, headers=headers_for_range) as response:
+                response.raise_for_status()
+
+                # Basic check if server ignored range request and sent full file
+                if response.status_code == 200 and "Content-Range" not in response.headers:
+                    logger.warning(
+                        f"Segment {segment_index}: Server returned 200 OK without Content-Range for {self.url}. This segment might get the whole file.")
+
+                with self._file_write_lock:
+                    self._segments[segment_index]['status'] = STATUS_DOWNLOADING
+
+                for chunk in response.iter_bytes(chunk_size=1024 * 512):  # 512KB chunks
+                    if self._is_cancelled:
+                        logger.info(f"Segment {segment_index}: Cancelled.")
+                        break
+
+                    if not self._pause_event.is_set():
+                        logger.debug(f"Segment {segment_index}: Paused, waiting for signal.")
+                    self._pause_event.wait()
+
+                    if self._is_cancelled:
+                        logger.info(f"Segment {segment_index}: Cancelled after pause.")
+                        break
+
+                    with self._file_write_lock:
+                        try:
+                            with open(self.save_path, "rb+") as file:
+                                file.seek(segment_start_offset + current_segment_downloaded_bytes)
+                                file.write(chunk)
+                        except IOError as e:
+                            logger.error(f"Segment {segment_index}: File write error: {e}")
+                            self._is_cancelled = True
+                            break
+
+                    current_segment_downloaded_bytes += len(chunk)
+                    with self._file_write_lock:
+                        self._segments[segment_index]['downloaded_bytes'] = current_segment_downloaded_bytes
+
+                    # Speed Limit Logic for this segment thread
+                    if self.__class__.global_speed_limit_bps and self.__class__.global_speed_limit_bps > 0:
+                        time_for_chunk_at_limit = len(chunk) / self.__class__.global_speed_limit_bps
+                        time.sleep(
+                            time_for_chunk_at_limit)
+
+                if not self._is_cancelled:
+                    if current_segment_downloaded_bytes >= (end_byte - start_byte + 1):
+                        with self._file_write_lock:
+                            self._segments[segment_index]['status'] = STATUS_COMPLETE
+                        logger.debug(f"Segment {segment_index}: Completed.")
+                    else:
+                        with self._file_write_lock:
+                            self._segments[segment_index]['status'] = STATUS_INCOMPLETE
+                        logger.warning(
+                            f"Segment {segment_index}: Incomplete ({current_segment_downloaded_bytes} of {end_byte - start_byte + 1}).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Segment {segment_index} HTTP Error: {e.response.status_code} for URL {e.request.url}")
+            with self._file_write_lock:
+                self._segments[segment_index]['status'] = f"Error HTTP {e.response.status_code}"
+            self._is_cancelled = True
+        except httpx.RequestError as e:
+            logger.error(f"Segment {segment_index} Network Error: {e} for URL {self.url}")
+            with self._file_write_lock:
+                self._segments[segment_index]['status'] = "Error (Network)"
+            self._is_cancelled = True
+        except Exception as e:
+            logger.error(f"Segment {segment_index} Generic Error: {e}", exc_info=True)
+            with self._file_write_lock:
+                self._segments[segment_index]['status'] = "Error (General)"
+            self._is_cancelled = True
+        finally:
+            if segment_client:
+                try:
+                    segment_client.close()
+                except Exception as e_close:
+                    logger.debug(
+                        f"Exception closing segment client for {self.download_id} segment {segment_index}: {e_close}")
+
     def run(self):
         self._is_running = True
+        self._pause_event.set()
 
         if self._is_cancelled:
             logger.info(f"Download {self.download_id} run() called but already cancelled.")
@@ -685,234 +804,194 @@ class DownloadWorker(QThread):
         self.status_changed.emit(STATUS_CONNECTING)
         self.db.update_status(self.download_id, STATUS_CONNECTING)
 
-        effective_headers = {
-            "User-Agent": "PIDM/1.0 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        effective_headers.update(self.custom_headers)
-
-        current_request_headers = effective_headers.copy()
-        file_mode = "wb"
-
-        if self._downloaded_bytes > 0:
-            if not self.save_path.exists():
-                logger.warning(f"[Resume] File {self.save_path} missing for {self.download_id}, restarting download.")
-                self._downloaded_bytes = 0
-                self.db.update_download_progress_details(self.download_id, 0, 0)
-            else:
-                current_file_size = self.save_path.stat().st_size
-                resume_data_from_file = self.resume_helper.read()
-
-                if resume_data_from_file and resume_data_from_file.get("url") == self.url:
-                    self._downloaded_bytes = resume_data_from_file.get("downloaded_bytes", 0)
-                    if self._total_size == 0 and resume_data_from_file.get("total_size", 0) > 0:
-                        self._total_size = resume_data_from_file.get("total_size")
-                        self.total_size_known.emit(self._total_size)
-                        self.db.update_total_size(self.download_id, self._total_size)
-                    logger.info(f"[Resume] Using .resume file: {self._downloaded_bytes} bytes for {self.download_id}.")
-                    if abs(current_file_size - self._downloaded_bytes) > 1024 * 1024:
-                        logger.warning(
-                            f"[Resume] Large size mismatch (.resume: {self._downloaded_bytes}, file: {current_file_size}) for {self.download_id}. Trusting .resume.")
-                elif abs(current_file_size - self._downloaded_bytes) > 1024 * 1024:
-                    logger.warning(
-                        f"[Resume] File size ({current_file_size}) vs DB ({self._downloaded_bytes}) mismatch for {self.download_id}. Restarting.")
-                    self._downloaded_bytes = 0
-                    self.db.update_download_progress_details(self.download_id, 0, 0)
-                elif current_file_size < self._downloaded_bytes:
-                    logger.warning(
-                        f"[Resume] File size ({current_file_size}) < DB ({self._downloaded_bytes}) for {self.download_id}. Using file size.")
-                    self._downloaded_bytes = current_file_size
-
-                if self._downloaded_bytes > 0:
-                    current_request_headers["Range"] = f"bytes={self._downloaded_bytes}-"
-                    file_mode = "ab"
-                    if not self._is_cancelled:
-                        self.status_changed.emit(STATUS_RESUMING)
-                        self.db.update_status(self.download_id, STATUS_RESUMING)
+        client_temp = None
+        if self._total_size == 0:
+            logger.info(f"Download {self.download_id}: Total size unknown, attempting to fetch from server.")
+            try:
+                timeout_config = httpx.Timeout(30.0, connect=15.0)
+                client_temp = httpx.Client(timeout=timeout_config, follow_redirects=True)
+                response = client_temp.head(self.url, headers={"User-Agent": "PIDM/1.0"})
+                response.raise_for_status()
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    self._total_size = int(content_length)
+                    self.total_size_known.emit(self._total_size)
+                    self.db.update_total_size(self.download_id, self._total_size)
                 else:
-                    file_mode = "wb"
+                    logger.error(f"Download {self.download_id}: Could not get total size from HEAD request.")
+                    self.status_changed.emit("Error: Size unknown")
+                    self._is_running = False
+                    return
+            except Exception as e:
+                logger.error(f"Download {self.download_id}: Failed to get total size: {e}")
+                self.status_changed.emit("Error: Failed to get size")
+                self._is_running = False
+                return
+            finally:
+                if client_temp:
+                    try:
+                        client_temp.close()
+                    except Exception as e_close:
+                        logger.debug(f"Exception closing client_temp for {self.download_id}: {e_close}")
 
-        if self._is_cancelled:
-            logger.info(f"Download {self.download_id} cancelled before starting network stream.")
-            self.status_changed.emit(STATUS_CANCELLED)
+        if self._total_size <= 0:
+            logger.error(f"Download {self.download_id}: Invalid total size ({self._total_size}). Cannot proceed.")
+            self.status_changed.emit("Error: Invalid size")
             self._is_running = False
             return
 
+        self.save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # --- Multi-connection resume logic and file preparation ---
+        resume_data = self.resume_helper.read()
+        file_needs_creation = not self.save_path.exists()
+
+        if resume_data and resume_data.get("url") == self.url and \
+                resume_data.get("total_size") == self._total_size and \
+                isinstance(resume_data.get("segments"), list) and len(resume_data["segments"]) == self.NUM_CONNECTIONS:
+
+            self._segments = resume_data["segments"]
+            logger.info(f"[Resume] Using .resume file for {self.download_id}. Resuming {len(self._segments)} segments.")
+
+            current_file_size = self.save_path.stat().st_size if self.save_path.exists() else 0
+            sum_downloaded_from_segments = sum(s['downloaded_bytes'] for s in self._segments)
+
+            if abs(current_file_size - sum_downloaded_from_segments) > 1024 * 1024:
+                logger.warning(
+                    f"[Resume] Large size mismatch for {self.download_id}. File: {current_file_size}, Segments sum: {sum_downloaded_from_segments}. Re-initializing segments.")
+                file_needs_creation = True
+            elif current_file_size < sum_downloaded_from_segments:
+                logger.warning(
+                    f"[Resume] File size ({current_file_size}) < segments sum ({sum_downloaded_from_segments}) for {self.download_id}. Re-initializing segments.")
+                file_needs_creation = True
+
+        else:
+            logger.info(f"[Resume] No valid .resume file or mismatch for {self.download_id}. Starting fresh download.")
+            file_needs_creation = True
+
         try:
-            self.save_path.parent.mkdir(parents=True, exist_ok=True)
+            # Open file in binary write mode (creates if not exists, overwrites if wb, keeps if rb+)
+            if file_needs_creation:
+                with open(self.save_path, "wb") as f:
+                    f.truncate(self._total_size)
+                logger.info(
+                    f"Download {self.download_id}: File {self.save_path} pre-allocated to {self._total_size} bytes.")
 
-            timeout_config = httpx.Timeout(30.0, connect=15.0)
-            self.httpx_client = httpx.Client(auth=self.auth, timeout=timeout_config, follow_redirects=True)
+                self._segments = []
+                bytes_per_segment = self._total_size // self.NUM_CONNECTIONS
 
-            with self.httpx_client.stream("GET", self.url, headers=current_request_headers) as response:
-                self.httpx_response = response
+                for i in range(self.NUM_CONNECTIONS):
+                    start_byte = i * bytes_per_segment
+                    end_byte = start_byte + bytes_per_segment - 1
+                    if i == self.NUM_CONNECTIONS - 1:
+                        end_byte = self._total_size - 1
 
-                if self._is_cancelled:
-                    logger.info(f"Download {self.download_id} cancelled after stream opened, before reading.")
-                    self.status_changed.emit(STATUS_CANCELLED)
-                    return
+                    end_byte = min(end_byte, self._total_size - 1)
 
-                response.raise_for_status()
+                    if start_byte <= end_byte:
+                        self._segments.append({
+                            'index': i,
+                            'start_byte': start_byte,
+                            'end_byte': end_byte,
+                            'downloaded_bytes': 0,
+                            'status': STATUS_CONNECTING
+                        })
+                        logger.debug(f"Segment {i}: {start_byte}-{end_byte}")
+                    else:
+                        logger.warning(f"Segment {i}: Invalid range ({start_byte}-{end_byte}), skipping.")
+            else:
+                with open(self.save_path, "rb+") as f:
+                    pass
+                logger.info(f"Download {self.download_id}: Resuming existing file {self.save_path}.")
 
-                new_total_size_from_server = 0
-                content_range_header = response.headers.get("Content-Range")
-                content_length_header = response.headers.get("Content-Length")
-
-                if file_mode == "ab" and content_range_header and '/' in content_range_header:
-                    try:
-                        new_total_size_from_server = int(content_range_header.split('/')[-1])
-                    except ValueError:
-                        logger.warning(
-                            f"Could not parse Content-Range total for {self.download_id}: {content_range_header}")
-                elif content_length_header:
-                    try:
-                        server_reported_len = int(content_length_header)
-                        new_total_size_from_server = (
-                                    self._downloaded_bytes + server_reported_len) if file_mode == "ab" else server_reported_len
-                    except ValueError:
-                        logger.warning(
-                            f"Could not parse Content-Length for {self.download_id}: {content_length_header}")
-
-                if new_total_size_from_server > 0 and (
-                        self._total_size == 0 or self._total_size != new_total_size_from_server):
-                    self._total_size = new_total_size_from_server
-                    self.total_size_known.emit(self._total_size)
-                    self.db.update_total_size(self.download_id, self._total_size)
-                elif self._total_size == 0:
-                    if not self._is_cancelled: self.status_changed.emit(
-                        self.tr("Warning: Total file size unknown. Progress may be inaccurate."))
-
-                if self._is_cancelled:
-                    logger.info(f"Download {self.download_id} cancelled after header processing.")
-                    self.status_changed.emit(STATUS_CANCELLED)
-                    return
-
-                if not self._is_cancelled:
-                    self.status_changed.emit(STATUS_DOWNLOADING)
-                    self.db.update_status(self.download_id, STATUS_DOWNLOADING)
-
-                chunk_size = 1024 * 512  # 512KB
-                with open(self.save_path, file_mode) as file:
-                    for chunk in response.iter_bytes(chunk_size=chunk_size):
-                        if self._is_cancelled:
-                            logger.info(f"Download {self.download_id} cancelled during chunk iteration.")
-                            break
-
-                        while self._is_paused:
-                            if self._is_cancelled:
-                                logger.info(f"Download {self.download_id} cancelled while paused.")
-                                break
-                            self.msleep(200)
-                        if self._is_cancelled: break
-
-                        file.write(chunk)
-                        self._downloaded_bytes += len(chunk)
-
-                        # Speed Limit Logic
-                        if self.__class__.global_speed_limit_bps and self.__class__.global_speed_limit_bps > 0:
-                            current_speed_calc_time = time.time()
-                            time_for_chunk_at_limit = len(chunk) / self.__class__.global_speed_limit_bps
-                            actual_time_for_chunk = current_speed_calc_time - self._last_timestamp_for_limit
-                            if actual_time_for_chunk < time_for_chunk_at_limit:
-                                sleep_duration_ms = int((time_for_chunk_at_limit - actual_time_for_chunk) * 1000)
-                                if sleep_duration_ms > 0: self.msleep(sleep_duration_ms)
-                            self._last_timestamp_for_limit = time.time()
-
-                        progress_percent = int((self._downloaded_bytes / self._total_size) * 100) if self._total_size > 0 else -1
-                        speed_str, eta_str = self._calculate_speed_and_eta()
-                        if not self._is_cancelled:
-                            self.progress_updated.emit(progress_percent, speed_str, eta_str, self._downloaded_bytes,
-                                                       self._total_size)
-
-                        now = time.time()
-                        bytes_since_last_db_write = self._downloaded_bytes - self._last_db_write_bytes
-
-                        if (now - self._last_db_write_time >= self._db_write_interval) or \
-                                (bytes_since_last_db_write >= self._min_bytes_for_db_write):
-                            self.db.update_download_progress_details(self.download_id, max(0, progress_percent),
-                                                                     self._downloaded_bytes)
-                            self._last_db_write_time = now
-                            self._last_db_write_bytes = self._downloaded_bytes
-                            if self._total_size > 0:
-                                if not self._is_cancelled:
-                                    self.resume_helper.write(self._downloaded_bytes, self._total_size, self.url)
-
-                if self._is_cancelled:
-                    self.status_changed.emit(STATUS_CANCELLED)
-                elif self._total_size > 0 and self._downloaded_bytes < self._total_size:
-                    self.status_changed.emit(STATUS_INCOMPLETE)
-                    self.db.update_status(self.download_id, STATUS_INCOMPLETE)
-                elif self._total_size == 0 and self._downloaded_bytes > 0:
-                    self.status_changed.emit(STATUS_COMPLETE)
-                    self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
-                    self.finished_successfully.emit(str(self.save_path))
-                elif self._downloaded_bytes >= self._total_size and self._total_size > 0:
-                    self.status_changed.emit(STATUS_COMPLETE)
-                    self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
-                    self.finished_successfully.emit(str(self.save_path))
-
-        except httpx.HTTPStatusError as e:
-            err_msg_for_ui = f"HTTP Error: {e.response.status_code}"
-            response_text_snippet = "[Response body not read or unavailable]"
-            try:
-                e.response.read()
-                response_text_snippet = e.response.text[:200]
-            except httpx.ResponseNotRead:
-                logger.warning(
-                    f"Download {self.download_id} - Still ResponseNotRead after explicit read() for HTTPStatusError. Body might be empty or stream closed.")
-            except httpx.StreamConsumed:
-                logger.warning(f"Download {self.download_id} - StreamConsumed when trying to read error response body.")
-                if hasattr(e.response, '_content') and e.response._content is not None:
-                    try:
-                        response_text_snippet = e.response.text[:200]
-                    except Exception:
-                        pass
-            except Exception as read_exc:
-                logger.warning(
-                    f"Download {self.download_id} - Error reading response body for HTTPStatusError: {type(read_exc).__name__} - {read_exc}")
-                response_text_snippet = f"[Error reading response body: {type(read_exc).__name__}]"
-            logger.error(
-                f"Download {self.download_id} HTTP Error: {e.response.status_code} for URL {e.request.url} - Snippet: {response_text_snippet}")
-            if not self._is_cancelled:
-                self.status_changed.emit(err_msg_for_ui)
-                self.db.update_status(self.download_id, f"Error HTTP {e.response.status_code}")
-        except httpx.RequestError as e:
-            err_msg = f"Network Error: {type(e).__name__}"
-            logger.error(f"Download {self.download_id} Network Error: {e} for URL {self.url}")
-            if not self._is_cancelled:
-                self.status_changed.emit(err_msg)
-                self.db.update_status(self.download_id, "Error (Network)")
         except IOError as e:
-            err_msg = f"File Error: {e.strerror}"
-            logger.error(f"Download {self.download_id} File Error: {e}")
-            if not self._is_cancelled:
-                self.status_changed.emit(err_msg)
-                self.db.update_status(self.download_id, "Error (File)")
-        except Exception as e:
-            err_msg = f"Error: {type(e).__name__}"
-            logger.error(f"Download {self.download_id} Generic Error: {e}", exc_info=True)
-            if not self._is_cancelled:
-                self.status_changed.emit(err_msg)
-                self.db.update_status(self.download_id, "Error (General)")
-        finally:
+            logger.error(f"Download {self.download_id}: Failed to pre-allocate/access file: {e}")
+            self.status_changed.emit(f"Error: File access ({e.strerror})")
             self._is_running = False
+            return
+        # -------------------------------------------------------------------------
 
-            if self.httpx_response:
-                try:
-                    self.httpx_response.close()
-                except Exception as e_close:
-                    logger.debug(f"Exception closing httpx_response for {self.download_id}: {e_close}")
-                self.httpx_response = None
-            if self.httpx_client:
-                try:
-                    self.httpx_client.close()
-                except Exception as e_close:
-                    logger.debug(f"Exception closing httpx_client for {self.download_id}: {e_close}")
-                self.httpx_client = None
+        # --- Segment Threading (start segments from their current downloaded position) ---
+        self._segment_threads = []
+        for i, segment_info in enumerate(self._segments):
+            if self._is_cancelled:
+                break
+            actual_request_start_byte = segment_info['start_byte'] + segment_info['downloaded_bytes']
 
-            current_status_in_db = self.db.get_download_by_id(self.download_id).get(
-                'status') if self.db.get_download_by_id(self.download_id) else None
-            if self._is_cancelled or current_status_in_db == STATUS_COMPLETE:
+            if segment_info['downloaded_bytes'] < (segment_info['end_byte'] - segment_info['start_byte'] + 1):
+                thread = threading.Thread(target=self._download_segment,
+                                          args=(
+                                          segment_info['index'], actual_request_start_byte, segment_info['end_byte']))
+                self._segment_threads.append(thread)
+                thread.start()
+                logger.debug(
+                    f"Download {self.download_id}: Started thread for segment {i} from byte {actual_request_start_byte}.")
+            else:
+                logger.debug(f"Download {self.download_id}: Segment {i} already complete, skipping thread creation.")
+
+        # --- Main loop for progress reporting and waiting for segments to finish ---
+        self.status_changed.emit(STATUS_DOWNLOADING)
+        self.db.update_status(self.download_id, STATUS_DOWNLOADING)
+
+        while not self._is_cancelled and any(
+                s['downloaded_bytes'] < (s['end_byte'] - s['start_byte'] + 1) for s in self._segments):
+            total_downloaded = sum(s['downloaded_bytes'] for s in self._segments)
+            self._downloaded_bytes = total_downloaded
+
+            progress_percent = int((self._downloaded_bytes / self._total_size) * 100) if self._total_size > 0 else -1
+            speed_str, eta_str = self._calculate_speed_and_eta()
+
+            self.progress_updated.emit(progress_percent, speed_str, eta_str, self._downloaded_bytes,
+                                       self._total_size)
+
+            now = time.time()
+            bytes_since_last_db_write = self._downloaded_bytes - self._last_db_write_bytes
+
+            if (now - self._last_db_write_time >= self._db_write_interval) or \
+                    (bytes_since_last_db_write >= self._min_bytes_for_db_write):
+                self.db.update_download_progress_details(self.download_id, max(0, progress_percent),
+                                                         self._downloaded_bytes)
+                self._last_db_write_time = now
+                self._last_db_write_bytes = self._downloaded_bytes
+                if self._total_size > 0:
+                    with self._file_write_lock:
+                        segments_to_save = [s.copy() for s in self._segments]
+                    self.resume_helper.write(self._total_size, self.url, segments_to_save)
+
+            self.msleep(500)
+
+        # Wait for all threads to truly finish after loop condition is met or cancelled
+        for thread in self._segment_threads:
+            if thread.is_alive():
+                logger.debug(f"Download {self.download_id}: Main thread waiting for segment thread to join at end.")
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    logger.warning(f"Download {self.download_id}: Segment thread did not join gracefully at end.")
+
+        # --- Final Status Update ---
+        if self._is_cancelled:
+            self.status_changed.emit(STATUS_CANCELLED)
+            self.db.update_status(self.download_id, STATUS_CANCELLED)
+            self.resume_helper.delete()
+        else:
+            all_segments_fully_downloaded = all(
+                s['downloaded_bytes'] >= (s['end_byte'] - s['start_byte'] + 1) for s in self._segments)
+            if all_segments_fully_downloaded and self._downloaded_bytes >= self._total_size and self._total_size > 0:
+                self.status_changed.emit(STATUS_COMPLETE)
+                self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
+                self.finished_successfully.emit(str(self.save_path))
                 self.resume_helper.delete()
+            elif self._total_size == 0 and self._downloaded_bytes > 0:
+                self.status_changed.emit(STATUS_COMPLETE)
+                self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
+                self.finished_successfully.emit(str(self.save_path))
+                self.resume_helper.delete()
+            else:
+                self.status_changed.emit(STATUS_INCOMPLETE)
+                self.db.update_status(self.download_id, STATUS_INCOMPLETE)
+
+        # --- Final cleanup ---
+        self._is_running = False
 
 
 class QueueSchedulerThread(QThread):
