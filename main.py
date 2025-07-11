@@ -1344,23 +1344,21 @@ class MetadataFetcher(QThread):
         logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting timeout.")
         self.timeout.emit()
 
-    # Add this new helper method to the MetadataFetcher class
+
     def _get_ytdlp_info(self, url):
         try:
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'simulate': True,       # Don't download, just get info
+                'simulate': True,
                 'force_generic_extractor': False,
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                # Check if it's a playlist, and if so, get info for the first entry
                 if 'entries' in info and info['entries']:
                     return info['entries'][0]
                 return info
         except yt_dlp.utils.DownloadError:
-            # This means yt-dlp doesn't support this URL, which is not an error for us.
             return None
 
     def _is_streamable_by_ytdlp(self, url):
