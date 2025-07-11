@@ -1301,23 +1301,25 @@ class MetadataFetcher(QThread):
         self.is_stream = False  # New flag to indicate if it's a stream
 
     def run(self):
-        # try to detect if it's a streamable URL using yt_dlp
-        if self._is_streamable_by_ytdlp(self.original_url):
-            self.is_stream = True
-            # For stream, metadata will be minimal, size is unknown until download
-            # Filename will be determined by yt_dlp itself, so we can set a placeholder
-            # or try to get a more accurate one later.
-            # For now, we return a flag indicating it's a stream.
-            self.result.emit({
-                "content_length": 0,
-                "content_type": "video/unknown",  # Placeholder
-                "filename": guess_filename_from_url(self.original_url),  # Initial guess
-                "final_url": self.original_url,
-                "is_stream": True
-            })
-            return
+        try:
+            info = self._get_ytdlp_info(self.original_url)
+            if info:
+                self.is_stream = True
+                filename = info.get('title', guess_filename_from_url(self.original_url))
+                if 'ext' in info:
+                    filename = f"{filename}.{info['ext']}"
 
-        # If not a stream, proceed with regular HTTP metadata fetching
+                self.result.emit({
+                    "content_length": info.get('filesize') or info.get('filesize_approx') or 0,
+                    "content_type": "video/stream",
+                    "filename": filename,
+                    "final_url": self.original_url,
+                    "is_stream": True
+                })
+                return
+        except Exception as e:
+            logger.debug(f"yt-dlp check failed, proceeding with standard HTTP. Error: {e}")
+
         try:
             metadata = self._fetch_metadata_attempt(self.original_url)
             if metadata:
@@ -1336,13 +1338,30 @@ class MetadataFetcher(QThread):
                 if metadata:
                     self.result.emit(metadata)
                     return
-            except httpx.TimeoutException:
-                logging.error(f"[MetadataFetcher] Timeout for HTTP fallback {fallback_url}")
-            except Exception as e:
-                logging.error(f"[MetadataFetcher] Error with HTTP fallback {fallback_url}: {e}")
+            except Exception:
+                pass
 
         logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting timeout.")
         self.timeout.emit()
+
+    # Add this new helper method to the MetadataFetcher class
+    def _get_ytdlp_info(self, url):
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'simulate': True,       # Don't download, just get info
+                'force_generic_extractor': False,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                # Check if it's a playlist, and if so, get info for the first entry
+                if 'entries' in info and info['entries']:
+                    return info['entries'][0]
+                return info
+        except yt_dlp.utils.DownloadError:
+            # This means yt-dlp doesn't support this URL, which is not an error for us.
+            return None
 
     def _is_streamable_by_ytdlp(self, url):
         """
@@ -1368,9 +1387,6 @@ class MetadataFetcher(QThread):
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False, process=False)  # process=False to avoid full processing
-                # If info is extracted, it's likely a streamable URL.
-                # We don't need detailed info here, just a yes/no.
-                # A simple check like 'entries' for playlists or 'id' for single videos is enough.
                 return 'entries' in info or 'id' in info
         except yt_dlp.utils.DownloadError as e:
             logger.debug(f"yt_dlp failed to extract info for {url}: {e}")
@@ -1934,10 +1950,8 @@ class NewDownloadDialog(QDialog):
         # Adjust size label for streams
         if self.is_stream_download:
             self.file_size_preview_label.setText(self.tr("Size: Streaming (Unknown)"))
-            # For streams, the save path should default to the filename without extension
-            # as yt-dlp will add the correct extension.
             default_save_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-            base_filename = Path(filename).stem  # Get filename without extension
+            base_filename = Path(filename).stem
             self.save_path_combo.setCurrentText(str(Path(default_save_dir) / base_filename))
         else:
             self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
@@ -1974,7 +1988,7 @@ class NewDownloadDialog(QDialog):
         if self.is_stream_download:
             self.file_size_preview_label.setText(self.tr("Size: Streaming (Unknown)"))
             default_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-            base_filename = Path(filename).stem  # Get filename without extension
+            base_filename = Path(filename).stem
             self.save_path_combo.setCurrentText(str(Path(default_dir) / base_filename))
         else:
             self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
@@ -2039,7 +2053,7 @@ class NewDownloadDialog(QDialog):
 
         data_for_db = {
             "url": self.fetched_metadata.get("final_url", self.url_display.text()),
-            "file_name": Path(download_path_str).name,
+            "file_name": self.fetched_metadata.get("filename") or Path(download_path_str).name,
             "save_path": download_path_str,
             "description": self.description_input.text().strip(),
             "status": status_on_add,
@@ -2236,14 +2250,12 @@ class NewBatchDownloadDialog(QDialog):
             full_path = str(Path(save_dir) / filename)
 
             is_stream = meta.get("is_stream", False)
-            # For streams, the filename in the table might not have the final extension
-            # yt-dlp will determine the final filename. So we store the base name.
             if is_stream:
                 full_path = str(Path(save_dir) / Path(filename).stem)  # Store path without extension
 
             payload = {
                 "url": meta.get("final_url", row["url"]),
-                "file_name": filename,  # This will be the initial guessed filename
+                "file_name": filename,
                 "save_path": full_path,
                 "description": "",
                 "status": status,
@@ -2252,7 +2264,7 @@ class NewBatchDownloadDialog(QDialog):
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "total_size": meta.get("content_length", 0),
                 "progress": 0, "speed": "", "eta": "", "bytes_downloaded": 0,
-                "is_stream": is_stream,  # Save stream flag
+                "is_stream": is_stream,
             }
 
             if queue_id is not None:
@@ -2454,7 +2466,7 @@ class DownloadInfoWindow(QWidget):
         # Handle initial status for streams
         if worker.is_stream:
             self.status_label.setText(self.tr("Status: ") + self.tr(STATUS_YTDLP))
-            self.progress_bar.setRange(0, 0)  # Indeterminate progress bar
+            self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat(self.tr("Downloading..."))
 
     @Slot(int, str, str, int, int)
@@ -2635,7 +2647,7 @@ class PropertiesDialog(QDialog):
 
         if new_path != original_data.get("save_path"):
             changed_fields["save_path"] = new_path
-            changed_fields["file_name"] = Path(new_path).name  # Update filename if path changes
+            changed_fields["file_name"] = Path(new_path).name
 
         if new_desc != original_data.get("description", ""):
             changed_fields["description"] = new_desc
@@ -3318,11 +3330,9 @@ class PIDM(QMainWindow):
         all_downloads = self.db.load_all()
         for item_data in all_downloads:
             status = item_data['status']
-            # If it was downloading/connecting/resuming and app closed, set to paused
-            # Unless it's a stream, then it's just 'Error' or 'Incomplete' if not finished
             if status in [STATUS_DOWNLOADING, STATUS_CONNECTING, STATUS_RESUMING, STATUS_YTDLP]:
                 if item_data.get('is_stream', False):
-                    item_data['status'] = STATUS_INCOMPLETE  # Streams can't be paused/resumed in traditional sense
+                    item_data['status'] = STATUS_INCOMPLETE
                     self.db.update_status(item_data['id'], STATUS_INCOMPLETE)
                 else:
                     item_data['status'] = STATUS_PAUSED
@@ -3354,7 +3364,7 @@ class PIDM(QMainWindow):
                 if any(d["file_name"].lower().endswith(ext) for ext in extensions)
             ]
         elif filter_key in [STATUS_DOWNLOADING, STATUS_QUEUED, STATUS_PAUSED, STATUS_COMPLETE,
-                            STATUS_ERROR, STATUS_YTDLP]:  # Added STATUS_YTDLP
+                            STATUS_ERROR, STATUS_YTDLP]:
             if filter_key == STATUS_ERROR:
                 filtered_downloads_list = [d for d in all_db_downloads if
                                            d["status"] == STATUS_ERROR or d["status"] == STATUS_INCOMPLETE or "Error" in
@@ -3492,7 +3502,7 @@ class PIDM(QMainWindow):
             total_file_size=dl_entry["total_size"],
             auth=auth_tuple,
             custom_headers=custom_headers,
-            is_stream=is_stream,  # Pass stream flag to worker
+            is_stream=is_stream,
             parent=self
         )
 
@@ -3512,8 +3522,6 @@ class PIDM(QMainWindow):
         if not isinstance(worker, DownloadWorker): return
         download_id = worker.download_id
 
-        # When a stream is "paused", its worker is cancelled. The status is then manually set to PAUSED.
-        # The worker will emit CANCELLED here, but we should ignore it if the DB says the status is now PAUSED.
         db_status = self.db.get_download_by_id(download_id).get('status')
         if status_message == STATUS_CANCELLED and db_status == STATUS_PAUSED:
             logger.debug(f"Ignoring CANCELLED signal for {download_id} because it was intentionally paused.")
@@ -3566,19 +3574,16 @@ class PIDM(QMainWindow):
         if row is not None and row < self.download_table.rowCount():
             progress_bar = self.download_table.cellWidget(row, 4)
             if isinstance(progress_bar, QProgressBar):
-                if worker.is_stream:  # For streams, keep indeterminate unless complete
-                    if total_bytes > 0 and percent >= 0:  # If total size becomes known during stream
-                        progress_bar.setRange(0, 100)
-                        progress_bar.setValue(max(0, percent))
-                        progress_bar.setFormat(f"{max(0, percent)}%")
-                    else:
-                        progress_bar.setRange(0, 0)
+                is_indeterminate = total_bytes <= 0 or percent < 0
+
+                if is_indeterminate:
+                    progress_bar.setRange(0, 0)
+                    if worker.is_stream:
                         progress_bar.setFormat(self.tr("Streaming..."))
-                elif total_bytes == 0 and percent == -1:
-                    progress_bar.setRange(0, 0);
-                    progress_bar.setFormat(self.tr("Downloading..."))
+                    else:
+                        progress_bar.setFormat(self.tr("Downloading..."))
                 else:
-                    progress_bar.setRange(0, 100);
+                    progress_bar.setRange(0, 100)
                     progress_bar.setValue(max(0, percent))
                     progress_bar.setFormat(f"{max(0, percent)}%")
 
@@ -3626,7 +3631,6 @@ class PIDM(QMainWindow):
 
         row = self.download_id_to_row_map.get(download_id)
         if row is not None and row < self.download_table.rowCount():
-            # Only update size if it's not a stream or if it's a stream and total size became known
             if not worker.is_stream or total_size_val > 0:
                 self.download_table.setItem(row, 2, QTableWidgetItem(format_size(total_size_val)))
             elif worker.is_stream and total_size_val == 0:
@@ -3698,8 +3702,6 @@ class PIDM(QMainWindow):
                     active_in_this_queue += 1
                 continue
 
-            # For streams, if it's in a resumable status, we can try to start it again.
-            # For non-streams, we check if it's in a resumable status.
             if (dl_item.get('is_stream', False) and dl_item["status"] in [STATUS_QUEUED, STATUS_ERROR,
                                                                           STATUS_INCOMPLETE, STATUS_PAUSED]) or \
                     (not dl_item.get('is_stream', False) and dl_item["status"] in resumable_statuses):
@@ -3730,9 +3732,7 @@ class PIDM(QMainWindow):
                                         self.tr(f"Download is currently active or cannot be resumed."))
         elif not worker_info:
             resumable_statuses = [STATUS_QUEUED, STATUS_PAUSED, STATUS_ERROR, STATUS_INCOMPLETE]
-            if is_stream and dl_data['status'] in [STATUS_QUEUED, STATUS_ERROR, STATUS_INCOMPLETE, STATUS_PAUSED]:
-                self._start_download_worker(download_id)  # Restart stream download
-            elif not is_stream and (dl_data['status'] in resumable_statuses or "Error" in dl_data['status']):
+            if dl_data['status'] in resumable_statuses or "Error" in dl_data['status']:
                 self._start_download_worker(download_id)
             else:
                 QMessageBox.information(self, self.tr("Cannot Resume"),
@@ -4158,12 +4158,17 @@ class PIDM(QMainWindow):
         else:
             menu.addAction(self.resume_action)
 
+        if is_stream:
+            self.pause_action.setText(self.tr("Interrupt Stream"))
+        else:
+            self.pause_action.setText(self.tr("&Pause"))
+
         menu.addAction(self.pause_action)
         menu.addSeparator()
 
 
         redownload_action = QAction(self.tr("Redownload"), self)
-        redownload_action.triggered.connect(self.handle_redownload_selected)
+        redownload_action.triggered.connect(self.handle_resume_selected)
 
         is_error_state = "Error" in dl_data['status'] or dl_data['status'] == STATUS_INCOMPLETE
         is_complete_and_file_missing = (
