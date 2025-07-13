@@ -533,7 +533,7 @@ class ResumeFileHandler:
 
 
 class DownloadWorker(QThread):
-    progress_updated = Signal(int, str, str, int, int)
+    progress_updated = Signal(int, str, str, float, float)
     status_changed = Signal(str)
     finished_successfully = Signal(str)
     total_size_known = Signal(int)
@@ -1303,8 +1303,18 @@ class MetadataFetcher(QThread):
     def run(self):
         try:
             info = self._get_ytdlp_info(self.original_url)
+            is_ytdlp_stream = False
             if info:
+                # Check for HLS/DASH manifests, live streams, or multiple formats which indicate a stream
+                if (info.get('protocol') in ['hls', 'm3u8', 'm3u8_native', 'http_dash_segments'] or
+                    info.get('is_live') is True or
+                    (isinstance(info.get('formats'), list) and len(info['formats']) > 1)):
+                    is_ytdlp_stream = True
+
+            if is_ytdlp_stream:
+                logger.info(f"yt-dlp identified a stream. Protocol: {info.get('protocol')}, Extractor: {info.get('extractor_key')}")
                 self.is_stream = True
+
                 filename = info.get('title', guess_filename_from_url(self.original_url))
                 if 'ext' in info:
                     filename = f"{filename}.{info['ext']}"
@@ -1317,33 +1327,43 @@ class MetadataFetcher(QThread):
                     "is_stream": True
                 })
                 return
+
+            else:
+                logger.debug("yt-dlp did not identify a specific stream. Proceeding with standard HTTP fetch.")
+
         except Exception as e:
             logger.debug(f"yt-dlp check failed, proceeding with standard HTTP. Error: {e}")
 
+        # If yt-dlp check fails or it's not a recognized stream, fall back to standard HTTP metadata fetch
         try:
             metadata = self._fetch_metadata_attempt(self.original_url)
             if metadata:
+                metadata["is_stream"] = False
                 self.result.emit(metadata)
                 return
         except httpx.TimeoutException:
             logging.error(f"[MetadataFetcher] Timeout for {self.original_url}")
+            self.timeout.emit()
+            return
         except Exception as e:
             logging.error(f"[MetadataFetcher] Error with {self.original_url}: {e}")
 
+
+        # Fallback for HTTPS -> HTTP
         if self.original_url.startswith("https://"):
             fallback_url = self.original_url.replace("https://", "http://", 1)
             logging.debug(f"[MetadataFetcher] Trying HTTP fallback: {fallback_url}")
             try:
                 metadata = self._fetch_metadata_attempt(fallback_url)
                 if metadata:
+                    metadata["is_stream"] = False
                     self.result.emit(metadata)
                     return
             except Exception:
                 pass
 
-        logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting timeout.")
-        self.timeout.emit()
-
+        logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting error.")
+        self.error.emit(self.tr("Could not fetch metadata for the given URL."))
 
     def _get_ytdlp_info(self, url):
         try:
@@ -2467,10 +2487,10 @@ class DownloadInfoWindow(QWidget):
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat(self.tr("Downloading..."))
 
-    @Slot(int, str, str, int, int)
+    @Slot(int, str, str, float, float)
     def _update_display(self, percent, speed_str, eta_str, downloaded, total):
         if self.worker.is_stream:
-            self.progress_bar.setRange(0, 0)  # Keep indeterminate for streams
+            self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat(self.tr("Downloading..."))
         else:
             self.progress_bar.setRange(0, 100)
@@ -3541,20 +3561,29 @@ class PIDM(QMainWindow):
                     progress_bar.setRange(0, 100)
                     progress_bar.setValue(100)
                     progress_bar.setFormat("100%")
+
                 elif status_message == STATUS_PAUSED:
+                    progress_bar.setRange(0, 100)
                     progress_bar.setFormat(self.tr("Paused"))
+
                 elif "Error" in status_message or status_message == STATUS_INCOMPLETE:
-                    progress_bar.setFormat(self.tr("Error"))
-                elif status_message == STATUS_QUEUED:
-                    progress_bar.setFormat(self.tr("Queued"))
+                    progress_bar.setRange(0, 100)
                     progress_bar.setValue(0)
+                    progress_bar.setFormat(self.tr("Error"))
+
+                elif status_message == STATUS_QUEUED:
+                    progress_bar.setRange(0, 100)
+                    progress_bar.setValue(0)
+                    progress_bar.setFormat(self.tr("Queued"))
+
                 elif status_message == STATUS_YTDLP:
-                    progress_bar.setRange(0, 0)  # Indeterminate
+                    progress_bar.setRange(0, 0)
                     progress_bar.setFormat(self.tr("Streaming..."))
 
         if status_message in [STATUS_COMPLETE, STATUS_ERROR, STATUS_CANCELLED]:
             if download_id in self.active_workers:
                 del self.active_workers[download_id]
+
         self.update_action_buttons_state()
 
     def check_for_updates_background(self):
@@ -3562,8 +3591,9 @@ class PIDM(QMainWindow):
         self.update_thread.update_available.connect(self._show_update_dialog)
         self.update_thread.start()
 
-    @Slot(int, str, str, int, int)
-    def _on_worker_progress_updated(self, percent: int, speed: str, eta: str, downloaded_bytes: int, total_bytes: int):
+    @Slot(int, str, str, float, float)
+    def _on_worker_progress_updated(self, percent: int, speed: str, eta: str, downloaded_bytes: float,
+                                    total_bytes: float):
         worker = self.sender()
         if not isinstance(worker, DownloadWorker): return
         download_id = worker.download_id
@@ -3784,8 +3814,8 @@ class PIDM(QMainWindow):
                 reply = QMessageBox.question(
                     self,
                     self.tr("Pause Stream Download"),
-                    self.tr("Pausing will interrupt your current download, and progress may be lost."
-                            "Resuming will restart the download from the beginning.\n\n"
+                    self.tr("Pausing will interrupt the download, and progress may be lost. "
+                            "Resuming will restart it from the beginning.\n\n"
                             "Are you sure you want to pause?"),
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No
@@ -3793,8 +3823,20 @@ class PIDM(QMainWindow):
                 if reply == QMessageBox.No:
                     return
 
-                # Proceed to "pause" (cancel and set status)
-                worker_info["worker"].cancel()
+                # For streams, "pausing" means stopping the worker cleanly.
+                worker = worker_info["worker"]
+                worker.cancel()
+
+                # Wait for the worker thread to finish. This is crucial.
+                if not worker.wait(3000):  # Wait 3 seconds
+                    logger.warning(f"Stream worker {dl_id} did not terminate gracefully on pause. Forcing termination.")
+                    worker.terminate()
+
+                # The worker's status_changed signal should have removed it from active_workers upon cancellation.
+                # We can ensure it's gone here.
+                if dl_id in self.active_workers:
+                    del self.active_workers[dl_id]
+
                 self.db.update_status(dl_id, STATUS_PAUSED)
                 row = self.download_id_to_row_map.get(dl_id)
                 if row is not None and row < self.download_table.rowCount():
@@ -3804,6 +3846,9 @@ class PIDM(QMainWindow):
                         pb.setProperty("status", STATUS_PAUSED)
                         self.style().unpolish(pb)
                         self.style().polish(pb)
+                        pb.setRange(0, 100)  # Set to determinate
+                        dl_progress = self.db.get_download_by_id(dl_id).get('progress', 0)
+                        pb.setValue(dl_progress if dl_progress > 0 else 0)
                         pb.setFormat(self.tr("Paused"))
                 self.update_action_buttons_state()
             return
@@ -3852,47 +3897,94 @@ class PIDM(QMainWindow):
         self.update_action_buttons_state()
 
     @Slot()
-    def handle_delete_selected_entry(self):
+    def handle_delete_selected_entry(self): #todo: needs more work ( not complete )
         dl_id = self._get_selected_download_id()
         if dl_id is None: return
         dl_data = self.db.get_download_by_id(dl_id)
         if not dl_data: return
 
-        file_path = Path(dl_data["save_path"])
-        msg_remove_list = self.tr(f"Remove '{dl_data['file_name']}' from the list?")
-        msg_delete_file_disk = ""
-        should_prompt_file_delete = False
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(self.tr("Confirm Removal"))
+        msg_box.setText(self.tr(f"What would you like to do with '{dl_data['file_name']}'?"))
+        msg_box.setIcon(QMessageBox.Question)
+        btn_delete_all = msg_box.addButton(self.tr("Delete from Disk"), QMessageBox.DestructiveRole)
+        btn_remove_only = msg_box.addButton(self.tr("Remove from List Only"), QMessageBox.ActionRole)
+        btn_cancel = msg_box.addButton(self.tr("Cancel"), QMessageBox.RejectRole)
+        msg_box.exec()
+        clicked_button = msg_box.clickedButton()
 
-        if file_path.exists():
-            if dl_data["status"] == STATUS_COMPLETE:
-                msg_delete_file_disk = self.tr("\nAlso delete the downloaded file from disk?")
-            else:
-                msg_delete_file_disk = self.tr("\nAlso delete the partial/incomplete file from disk?")
-            should_prompt_file_delete = True
+        if clicked_button == btn_cancel:
+            return
 
-        full_prompt = msg_remove_list + msg_delete_file_disk
-        buttons = QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
-
-        reply = QMessageBox.question(self, self.tr("Confirm Removal"), full_prompt, buttons, QMessageBox.NoButton)
-
-        if reply == QMessageBox.Cancel: return
-
-        delete_from_disk_confirmed = (reply == QMessageBox.Yes and should_prompt_file_delete)
-        remove_from_list_confirmed = (reply == QMessageBox.Yes)
-
-        if not remove_from_list_confirmed and reply == QMessageBox.No and should_prompt_file_delete:
-            reply_list_only = QMessageBox.question(self, self.tr("Remove from List Only?"), msg_remove_list,
-                                                   QMessageBox.Yes | QMessageBox.No)
-            if reply_list_only != QMessageBox.Yes: return
+        should_delete_files = (clicked_button == btn_delete_all)
 
         worker_info = self.active_workers.pop(dl_id, None)
-        if worker_info: worker_info["worker"].cancel()
+        if worker_info:
+            worker = worker_info["worker"]
+            logger.info(f"Stopping worker {dl_id} before deletion.")
+            worker.cancel()
+            if not worker.wait(3000):
+                logger.warning(f"Worker {dl_id} did not terminate gracefully. Forcing termination.")
+                worker.terminate()
 
-        if delete_from_disk_confirmed and file_path.exists():
+        if should_delete_files:
+            main_file_path = Path(dl_data["save_path"])
+            final_filename = Path(dl_data['file_name'])
+            save_dir = main_file_path.parent
+
+            if main_file_path.is_dir():
+                main_file_path = save_dir / final_filename
+
+            files_to_delete = {
+                main_file_path,
+                main_file_path.with_suffix(f"{main_file_path.suffix}.part"),
+                main_file_path.with_suffix(f"{main_file_path.suffix}.resume"),
+                main_file_path.with_suffix(f"{main_file_path.suffix}.ytdl")
+            }
+
+            if not main_file_path.suffix:
+                files_to_delete.add(Path(str(main_file_path) + ".part"))
+
             try:
-                file_path.unlink()
-            except OSError as e:
-                QMessageBox.warning(self, self.tr("File Deletion Error"), str(e))
+                base_name = main_file_path.name
+                for frag_file in save_dir.glob(f"{re.escape(base_name)}.part-Frag*"):
+                    files_to_delete.add(frag_file)
+            except Exception as e:
+                logger.warning(f"Could not search for fragment files: {e}")
+
+            max_retries = 5
+            retry_delay = 0.5  # seconds
+            for i in range(max_retries):
+                try:
+                    remaining_files = set()
+                    for file_path in files_to_delete:
+                        if file_path.exists():
+                            try:
+                                logger.debug(f"Attempt {i + 1}: Deleting {file_path}")
+                                file_path.unlink()
+                                logger.info(f"Deleted {file_path}")
+                            except OSError as e:
+                                logger.warning(f"Could not delete {file_path} on attempt {i + 1}: {e}")
+                                remaining_files.add(file_path)
+
+                    files_to_delete = remaining_files
+                    if not files_to_delete:
+                        logger.info("All files deleted successfully.")
+                        break
+
+                    logger.debug(f"End of attempt {i + 1}, remaining files: {files_to_delete}")
+                    if i < max_retries - 1:
+                        time.sleep(retry_delay)
+
+                except Exception as e:
+                    logger.error(f"An unexpected error occurred during file deletion: {e}")
+                    break
+
+            if files_to_delete:
+                logger.error(f"Final deletion attempt failed. Could not delete: {files_to_delete}")
+                QMessageBox.warning(self, self.tr("File Deletion Error"),
+                                    self.tr(
+                                        "Could not delete all associated files. One or more files may still be locked."))
 
         self.db.delete_download(dl_id)
         self._remove_row_from_table_by_id(dl_id)
@@ -4156,14 +4248,8 @@ class PIDM(QMainWindow):
         else:
             menu.addAction(self.resume_action)
 
-        if is_stream:
-            self.pause_action.setText(self.tr("Interrupt Stream"))
-        else:
-            self.pause_action.setText(self.tr("&Pause"))
-
         menu.addAction(self.pause_action)
         menu.addSeparator()
-
 
         redownload_action = QAction(self.tr("Redownload"), self)
         redownload_action.triggered.connect(self.handle_resume_selected)
