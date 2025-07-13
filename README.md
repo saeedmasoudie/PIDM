@@ -75,12 +75,12 @@ PIDM supports multiple languages. You can contribute via `.ts` and `.qm` files u
 
 ## 🧩 Roadmap
 
-- [x] Native messaging support
+- [x] Chrome extension
 - [x] Theme-aware SVG icons
 - [x] Speed limiting per download
-- [ ] Advanced browser video grabbing (blob)
-- [ ] Firefox/Edge support
-- [ ] Plugin system for mirror selection
+- [ ] Stream Download support
+- [ ] Grabbing stream videos in extention
+- [ ] Soon...
 
 ---
 
