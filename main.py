@@ -3,6 +3,8 @@ import logging
 import mimetypes
 import platform
 import re
+import signal
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -583,6 +585,20 @@ class DownloadWorker(QThread):
         self._pause_event = threading.Event()
         self._pause_event.set()
 
+    def _kill_process_tree(self, pid):
+        logger.info(f"Attempting to kill process tree with PID: {pid}")
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ['taskkill', '/F', '/T', '/PID', str(pid)],
+                    check=True, capture_output=True
+                )
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            logger.info(f"Successfully sent kill signal to process tree {pid}.")
+        except (subprocess.CalledProcessError, ProcessLookupError, PermissionError) as e:
+            logger.error(f"Failed to kill process tree {pid}: {e}")
+
     @classmethod
     def set_global_speed_limit(cls, limit_kbps: int):
         if limit_kbps <= 0:
@@ -592,9 +608,8 @@ class DownloadWorker(QThread):
 
     def pause(self):
         if self.is_stream:
-            # Stream pausing is handled by PIDM class with a warning.
-            # This method is for traditional pausing.
-            logger.info(f"Download {self.download_id} is a stream, traditional pause not supported.")
+            logger.info(f"Pausing a stream is not supported. Cancelling download {self.download_id}.")
+            self.cancel()
             return
 
         if self._is_running and not self._is_paused:
@@ -624,15 +639,22 @@ class DownloadWorker(QThread):
             logger.info(f"Download {self.download_id} resumed.")
 
     def cancel(self):
-        self._is_cancelled = True
-        self._pause_event.set()  # Ensure any waiting threads are released
-        logger.info(f"DownloadWorker {self.download_id} cancel called.")
+        if self._is_cancelled:
+            return
 
-        # For yt_dlp, the process will be killed by the main thread if it's running
-        # For multi-segment, rely on _is_cancelled flag in _download_segment
+        logger.info(f"Download {self.download_id}: Cancellation requested.")
+        self._is_cancelled = True
+        self._pause_event.set()
+
+        if hasattr(self, '_yt_dlp_process') and self._yt_dlp_process:
+            if self._yt_dlp_process.poll() is None:
+                self._kill_process_tree(self._yt_dlp_process.pid)
+            else:
+                logger.info("Cancel called, but yt-dlp process was already finished.")
+
         for segment_thread in self._segment_threads:
             if segment_thread.is_alive():
-                pass  # The _is_cancelled flag is checked inside _download_segment
+                pass
 
         # Give some time for threads to react to cancellation
         self.msleep(100)
@@ -834,123 +856,97 @@ class DownloadWorker(QThread):
             self._is_cancelled = True
 
     def _run_yt_dlp_download(self):
-        """
-        Handles downloading of streamable content using yt_dlp.
-        This method is designed to be non-resumable and non-pausable in the traditional sense.
-        """
         self.status_changed.emit(STATUS_YTDLP)
         self.db.update_status(self.download_id, STATUS_YTDLP)
-        logger.info(f"Starting yt_dlp download for {self.url} to {self.save_path}")
+        logger.info(f"Starting yt_dlp module process for {self.url}")
 
-        # yt_dlp progress hook
-        def ytdlp_progress_hook(d):
+        self.save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        ffmpeg_path = ""
+        try:
+            base_path = Path(sys.argv[0]).parent
+            potential_path = base_path / "bin" / "ffmpeg.exe"
+            if potential_path.exists():
+                ffmpeg_path = str(potential_path)
+                logger.info(f"Found ffmpeg at: {ffmpeg_path}")
+            else:
+                logger.warning("ffmpeg.exe not found in 'bin' directory.")
+        except Exception as e:
+            logger.error(f"Could not determine ffmpeg path: {e}")
+
+        ydl_opts = [
+            sys.executable, '-m', 'yt_dlp', '--no-warnings', '--progress-template',
+            '%(progress.status)s,%(progress.downloaded_bytes)s,%(progress.total_bytes)s,%(progress.speed)s,%(progress.eta)s,%(progress.fragment_index)s,%(progress.fragment_count)s\n',
+            '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '-o', str(self.save_path), self.url
+        ]
+        if ffmpeg_path:
+            ydl_opts.extend(['--ffmpeg-location', ffmpeg_path])
+
+        creation_flags = 0
+        preexec_fn = None
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NO_WINDOW
+        else:
+            preexec_fn = os.setsid
+
+        self._yt_dlp_process = None
+        try:
+            self._yt_dlp_process = subprocess.Popen(
+                ydl_opts, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                encoding='utf-8', errors='ignore', creationflags=creation_flags, preexec_fn=preexec_fn
+            )
+            for line in iter(self._yt_dlp_process.stdout.readline, ''):
+                if self._is_cancelled:
+                    self._kill_process_tree(self._yt_dlp_process.pid)
+                    break
+                line = line.strip()
+                try:
+                    parts = line.split(',')
+                    if len(parts) == 7 and parts[0] == 'downloading':
+                        _status, downloaded_str, total_str, speed_str, eta_str, frag_idx_str, frag_count_str = parts
+                        progress_percent = 0
+                        self._downloaded_bytes = int(float(downloaded_str)) if downloaded_str != "NA" else 0
+
+                        if total_str != "NA":
+                            self._total_size = int(float(total_str))
+                            if self._total_size > 0: progress_percent = int(
+                                (self._downloaded_bytes / self._total_size) * 100)
+                        elif frag_count_str != "NA":
+                            self._total_size = 0  # Set total size to 0 for streams
+                            current_frag, total_frags = int(frag_idx_str), int(frag_count_str)
+                            if total_frags > 0: progress_percent = int((current_frag / total_frags) * 100)
+
+                        speed = float(speed_str) if speed_str != "NA" else 0
+                        eta = int(float(eta_str)) if eta_str != "NA" else 0
+                        speed_str, eta_str = f"{speed / (1024 * 1024):.2f} MB/s", f"{eta // 60}m {eta % 60}s"
+                        self.progress_updated.emit(progress_percent, speed_str, eta_str, self._downloaded_bytes,
+                                                   self._total_size)
+                except (ValueError, TypeError):
+                    pass
+            self._yt_dlp_process.wait()
             if self._is_cancelled:
-                raise yt_dlp.DownloadError("Download cancelled by user.")
-
-            if d['status'] == 'downloading':
-                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                downloaded_bytes = d.get('downloaded_bytes', 0)
-                speed_bps = d.get('speed', 0)  # bytes/sec
-                eta_seconds = d.get('eta', float('inf'))
-
-                self._downloaded_bytes = downloaded_bytes
-                self._total_size = total_bytes  # Update total size if it becomes known
-
-                progress_percent = int((downloaded_bytes / total_bytes) * 100) if total_bytes > 0 else -1
-
-                speed_kbps = speed_bps / 1024
-                if speed_kbps >= 1024:
-                    speed_str = f"{speed_kbps / 1024:.2f} MB/s"
-                elif speed_kbps > 0:
-                    speed_str = f"{speed_kbps:.2f} KB/s"
-                else:
-                    speed_str = "0.00 KB/s"
-
-                eta_str = "N/A"
-                if eta_seconds != float('inf') and eta_seconds is not None:
-                    eta_minutes = int(eta_seconds // 60)
-                    eta_seconds = int(eta_seconds % 60)
-                    eta_hours = int(eta_minutes // 60)
-                    eta_minutes %= 60
-
-                    if eta_hours > 0:
-                        eta_str = f"{eta_hours}h {eta_minutes}m {eta_seconds}s"
-                    elif eta_minutes > 0:
-                        eta_str = f"{eta_minutes}m {eta_seconds}s"
-                    else:
-                        eta_str = f"{eta_seconds}s"
-                elif total_bytes > 0 and downloaded_bytes >= total_bytes:
-                    eta_str = "Complete"
-                elif total_bytes == 0:
-                    eta_str = "Streaming"
-
-                self.progress_updated.emit(progress_percent, speed_str, eta_str, downloaded_bytes, total_bytes)
-
-                # Update DB periodically
-                now = time.time()
-                bytes_since_last_db_write = self._downloaded_bytes - self._last_db_write_bytes
-                if (now - self._last_db_write_time >= self._db_write_interval) or \
-                        (bytes_since_last_db_write >= self._min_bytes_for_db_write):
-                    self.db.update_download_progress_details(self.download_id, max(0, progress_percent),
-                                                             self._downloaded_bytes)
-                    if total_bytes > 0 and self._total_size == 0:  # If total size became known during download
-                        self.db.update_total_size(self.download_id, total_bytes)
-                        self._total_size = total_bytes
-                    self._last_db_write_time = now
-                    self._last_db_write_bytes = self._downloaded_bytes
-
-            elif d['status'] == 'finished':
-                logger.info(f"yt_dlp download finished for {self.download_id}")
+                self.status_changed.emit(STATUS_CANCELLED)
+                self.db.update_status(self.download_id, STATUS_CANCELLED)
+            elif self._yt_dlp_process.returncode == 0:
+                logger.info(f"yt_dlp download finished successfully.")
                 self.status_changed.emit(STATUS_COMPLETE)
                 self.db.mark_complete(self.download_id, QDateTime.currentDateTime().toString(Qt.ISODate))
                 self.finished_successfully.emit(str(self.save_path))
-                self.resume_helper.delete()  # No resume file for yt-dlp
-
-        # yt_dlp options
-        ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
-            'outtmpl': str(self.save_path),
-            'noplaylist': True,
-            'progress_hooks': [ytdlp_progress_hook],
-            'logger': logger,
-            'quiet': True,
-            'no_warnings': True,
-            'retries': 3,
-            'fragment_retries': 3,
-            'continuedl': True,  # Allow continuing if file exists (yt-dlp handles this, not our resume file)
-            'cookiefile': None,  # We don't manage cookies via file, but via headers if provided
-        }
-
-        # Add custom headers if provided
-        if self.custom_headers:
-            ydl_opts['http_headers'] = self.custom_headers
-
-        # Add authentication if provided
-        if self.auth and self.auth[0] and self.auth[1]:
-            ydl_opts['username'] = self.auth[0]
-            ydl_opts['password'] = self.auth[1]
-
-        # Ensure directory exists
-        self.save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self.url])
-        except yt_dlp.DownloadError as e:
-            if "Download cancelled by user" in str(e):
-                logger.info(f"yt_dlp download {self.download_id} was cancelled.")
-                self.status_changed.emit(STATUS_CANCELLED)
-                self.db.update_status(self.download_id, STATUS_CANCELLED)
             else:
-                logger.error(f"yt_dlp download {self.download_id} failed: {e}")
-                self.status_changed.emit(STATUS_ERROR)
+                stderr_output = self._yt_dlp_process.stderr.read()
+                error_message = f"yt-dlp process failed with exit code {self._yt_dlp_process.returncode}. Error: {stderr_output.strip()}"
+                logger.error(error_message)
+                self.status_changed.emit(f"Error: {stderr_output.strip()}")
                 self.db.update_status(self.download_id, STATUS_ERROR)
+
         except Exception as e:
-            logger.error(f"An unexpected error occurred during yt_dlp download {self.download_id}: {e}", exc_info=True)
-            self.status_changed.emit(STATUS_ERROR)
+            logger.error(f"A critical error occurred while running yt-dlp: {e}", exc_info=True)
+            self.status_changed.emit("Error: Critical failure")
             self.db.update_status(self.download_id, STATUS_ERROR)
         finally:
             self._is_running = False
+            self._yt_dlp_process = None
 
     def run(self):
         self._is_running = True
@@ -3595,36 +3591,36 @@ class PIDM(QMainWindow):
     def _on_worker_progress_updated(self, percent: int, speed: str, eta: str, downloaded_bytes: float,
                                     total_bytes: float):
         worker = self.sender()
-        if not isinstance(worker, DownloadWorker): return
+        if not isinstance(worker, DownloadWorker):
+            return
         download_id = worker.download_id
 
         row = self.download_id_to_row_map.get(download_id)
         if row is not None and row < self.download_table.rowCount():
             progress_bar = self.download_table.cellWidget(row, 4)
-            if isinstance(progress_bar, QProgressBar):
-                is_indeterminate = total_bytes <= 0 or percent < 0
-
-                if is_indeterminate:
-                    progress_bar.setRange(0, 0)
-                    if worker.is_stream:
-                        progress_bar.setFormat(self.tr("Streaming..."))
-                    else:
-                        progress_bar.setFormat(self.tr("Downloading..."))
-                else:
-                    progress_bar.setRange(0, 100)
-                    progress_bar.setValue(max(0, percent))
-                    progress_bar.setFormat(f"{max(0, percent)}%")
+            size_item = self.download_table.item(row, 2)
 
             self.download_table.setItem(row, 5, QTableWidgetItem(speed))
             self.download_table.setItem(row, 6, QTableWidgetItem(eta))
 
-            current_size_item = self.download_table.item(row, 2)
-            new_size_str = format_size(total_bytes)
-            if worker.is_stream and total_bytes == 0:  # For streams, keep "Streaming" if size unknown
-                if current_size_item and current_size_item.text() != self.tr("Streaming"):
-                    current_size_item.setText(self.tr("Streaming"))
-            elif total_bytes > 0 and current_size_item and current_size_item.text() != new_size_str:
-                current_size_item.setText(new_size_str)
+            is_stream_with_known_progress = worker.is_stream and percent >= 0
+
+            if not is_stream_with_known_progress and total_bytes <= 0:
+                progress_bar.setRange(0, 0)
+                progress_bar.setFormat(self.tr("Connecting..."))
+            else:
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(max(0, percent))
+                progress_bar.setFormat(f"{max(0, percent)}%")
+
+            if total_bytes > 0:
+                size_str = f"{format_size(downloaded_bytes)} / {format_size(total_bytes)}"
+                size_item.setText(size_str)
+            elif worker.is_stream:
+                size_str = f"{format_size(downloaded_bytes)} / ∞"
+                size_item.setText(size_str)
+            else:
+                size_item.setText("...")
 
     @Slot(str)
     def handle_proxy_startup_failure(self, error_message):
