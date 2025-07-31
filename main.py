@@ -14,7 +14,7 @@ from urllib.parse import urlparse, unquote
 import yt_dlp
 import httpx
 from PySide6.QtGui import QAction, QIcon, QActionGroup, QDesktopServices, QFontDatabase, QFont, QColor, QPixmap, \
-    QPainter
+    QPainter, QPen
 from PySide6.QtNetwork import QLocalSocket, QLocalServer
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -23,10 +23,10 @@ from PySide6.QtWidgets import (
     QHeaderView, QMenu, QPushButton, QLabel, QLineEdit, QDialog, QFileDialog, QCheckBox, QComboBox,
     QFormLayout, QDialogButtonBox, QMessageBox, QInputDialog, QProgressBar, QFileIconProvider, QTimeEdit, QGridLayout,
     QTabWidget, QRadioButton, QDateEdit, QAbstractItemView, QSpinBox, QSizePolicy, QSplitter, QTextEdit,
-    QSystemTrayIcon
+    QSystemTrayIcon, QListWidget, QListWidgetItem, QGraphicsBlurEffect
 )
 from PySide6.QtCore import Qt, QSize, QTranslator, QLocale, QLibraryInfo, QCoreApplication, QTimer, QDateTime, Slot, \
-    QFileInfo, QUrl, QPoint, QTime, QDate, QProcess, QThread, Signal, QObject
+    QFileInfo, QUrl, QPoint, QTime, QDate, QProcess, QThread, Signal, QObject, QRect, QRectF
 import sys
 import os
 import json
@@ -121,7 +121,8 @@ class DatabaseManager:
             referrer TEXT DEFAULT NULL,
             custom_headers_json TEXT DEFAULT NULL,
             auth_json TEXT DEFAULT NULL,
-            is_stream INTEGER DEFAULT 0,  -- New column for stream links
+            is_stream INTEGER DEFAULT 0,
+            selected_format_id TEXT DEFAULT NULL,
             UNIQUE(url, save_path),
             FOREIGN KEY(queue_id) REFERENCES queues(id) ON DELETE SET NULL
         )""")
@@ -153,6 +154,9 @@ class DatabaseManager:
             if 'is_stream' not in columns:
                 logger.info("Adding 'is_stream' column to 'downloads' table.")
                 cursor.execute("ALTER TABLE downloads ADD COLUMN is_stream INTEGER DEFAULT 0")
+            if 'selected_format_id' not in columns:
+                logger.info("Adding 'selected_format_id' column to 'downloads' table.")
+                cursor.execute("ALTER TABLE downloads ADD COLUMN selected_format_id TEXT DEFAULT NULL")
             self.conn.commit()
         except sqlite3.Error as e:
             logger.error(f"SQLite error during schema migration: {e}")
@@ -177,21 +181,22 @@ class DatabaseManager:
             auth_json = json.dumps(auth_tuple) if auth_tuple else None
 
             cur.execute("""
-            INSERT INTO downloads (
-                url, file_name, save_path, description, status,
-                progress, speed, eta, queue_id, queue_position,
-                created_at, bytes_downloaded, total_size, referrer,
-                custom_headers_json, auth_json, is_stream
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
+                        INSERT INTO downloads (
+                            url, file_name, save_path, description, status,
+                            progress, speed, eta, queue_id, queue_position,
+                            created_at, bytes_downloaded, total_size, referrer,
+                            custom_headers_json, auth_json, is_stream, selected_format_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
                 data["url"], data["file_name"], data["save_path"],
                 data.get("description", ""), data.get("status", "queued"),
                 data.get("progress", 0), data.get("speed", ""), data.get("eta", ""),
                 data.get("queue_id"), data.get("queue_position", 0),
                 data.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 data.get("bytes_downloaded", 0), data.get("total_size", 0),
-                referrer_value,
-                custom_headers_json, auth_json, is_stream_value
+                data.get("referrer"),
+                custom_headers_json, auth_json, is_stream_value,
+                data.get("selected_format_id")
             ))
             self.conn.commit()
             return cur.lastrowid
@@ -545,7 +550,7 @@ class DownloadWorker(QThread):
 
     def __init__(self, download_id: int, db_manager, url: str, save_path: str,
                  initial_downloaded_bytes: int = 0, total_file_size: int = 0,
-                 auth=None, custom_headers: dict = None, is_stream: bool = False,  # Added is_stream
+                 auth=None, custom_headers: dict = None, is_stream: bool = False, selected_format_id: str = None,
                  parent=None):
         super().__init__(parent)
         self.download_id = download_id
@@ -554,7 +559,8 @@ class DownloadWorker(QThread):
         self.save_path = Path(save_path)
         self.auth = auth
         self.custom_headers = custom_headers if custom_headers is not None else {}
-        self.is_stream = is_stream  # Store the stream flag
+        self.is_stream = is_stream
+        self.selected_format_id = selected_format_id
         self._last_db_write_time = time.time()
         self.resume_helper = ResumeFileHandler(self.save_path)
 
@@ -874,10 +880,12 @@ class DownloadWorker(QThread):
         except Exception as e:
             logger.error(f"Could not determine ffmpeg path: {e}")
 
+        download_format = self.selected_format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
         ydl_opts = [
             sys.executable, '-m', 'yt_dlp', '--no-warnings', '--progress-template',
             '%(progress.status)s,%(progress.downloaded_bytes)s,%(progress.total_bytes)s,%(progress.speed)s,%(progress.eta)s,%(progress.fragment_index)s,%(progress.fragment_count)s\n',
-            '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '-f', download_format,
             '-o', str(self.save_path), self.url
         ]
         if ffmpeg_path:
@@ -1300,27 +1308,45 @@ class MetadataFetcher(QThread):
         try:
             info = self._get_ytdlp_info(self.original_url)
             is_ytdlp_stream = False
+
             if info:
-                # Check for HLS/DASH manifests, live streams, or multiple formats which indicate a stream
-                if (info.get('protocol') in ['hls', 'm3u8', 'm3u8_native', 'http_dash_segments'] or
-                    info.get('is_live') is True or
-                    (isinstance(info.get('formats'), list) and len(info['formats']) > 1)):
-                    is_ytdlp_stream = True
+                formats = info.get("formats", [])
+                is_ytdlp_stream = (
+                        info.get('protocol') in ['hls', 'm3u8', 'm3u8_native', 'http_dash_segments'] or
+                        info.get('is_live') is True or
+                        (formats and len(formats) > 1)
+                )
 
             if is_ytdlp_stream:
-                logger.info(f"yt-dlp identified a stream. Protocol: {info.get('protocol')}, Extractor: {info.get('extractor_key')}")
+                logger.info(
+                    f"yt-dlp identified a stream. Protocol: {info.get('protocol')}, Extractor: {info.get('extractor_key')}")
                 self.is_stream = True
 
                 filename = info.get('title', guess_filename_from_url(self.original_url))
                 if 'ext' in info:
                     filename = f"{filename}.{info['ext']}"
 
+                # Build a list of cleaned-up formats for quality selection
+                clean_formats = []
+                for fmt in info.get("formats", []):
+                    if fmt.get("vcodec", "none") != "none":
+                        label = self._format_resolution_label(fmt)
+                        clean_formats.append({
+                            "format_id": fmt.get("format_id"),
+                            "ext": fmt.get("ext"),
+                            "filesize": fmt.get("filesize") or fmt.get("filesize_approx"),
+                            "resolution": label,
+                            "format_note": fmt.get("format_note", ""),
+                        })
+
+                # Emit full metadata including formats
                 self.result.emit({
                     "content_length": info.get('filesize') or info.get('filesize_approx') or 0,
                     "content_type": "video/stream",
                     "filename": filename,
                     "final_url": self.original_url,
-                    "is_stream": True
+                    "is_stream": True,
+                    "formats": clean_formats
                 })
                 return
 
@@ -1330,7 +1356,7 @@ class MetadataFetcher(QThread):
         except Exception as e:
             logger.debug(f"yt-dlp check failed, proceeding with standard HTTP. Error: {e}")
 
-        # If yt-dlp check fails or it's not a recognized stream, fall back to standard HTTP metadata fetch
+        # Fallback to HTTP metadata
         try:
             metadata = self._fetch_metadata_attempt(self.original_url)
             if metadata:
@@ -1338,14 +1364,13 @@ class MetadataFetcher(QThread):
                 self.result.emit(metadata)
                 return
         except httpx.TimeoutException:
-            logging.error(f"[MetadataFetcher] Timeout for {self.original_url}")
+            logger.error(f"[MetadataFetcher] Timeout for {self.original_url}")
             self.timeout.emit()
             return
         except Exception as e:
-            logging.error(f"[MetadataFetcher] Error with {self.original_url}: {e}")
+            logger.error(f"[MetadataFetcher] Error with {self.original_url}: {e}")
 
-
-        # Fallback for HTTPS -> HTTP
+        # Final fallback
         if self.original_url.startswith("https://"):
             fallback_url = self.original_url.replace("https://", "http://", 1)
             logging.debug(f"[MetadataFetcher] Trying HTTP fallback: {fallback_url}")
@@ -1360,6 +1385,25 @@ class MetadataFetcher(QThread):
 
         logging.debug(f"[MetadataFetcher] All attempts failed for {self.original_url}. Emitting error.")
         self.error.emit(self.tr("Could not fetch metadata for the given URL."))
+
+    def _format_resolution_label(self, fmt):
+        height = fmt.get("height")
+        if height:
+            if height >= 2160:
+                return "4K"
+            elif height >= 1440:
+                return "1440p"
+            elif height >= 1080:
+                return "1080p"
+            elif height >= 720:
+                return "720p"
+            elif height >= 480:
+                return "480p"
+            elif height >= 360:
+                return "360p"
+            elif height >= 240:
+                return "240p"
+        return fmt.get("format_note") or "Unknown"
 
     def _get_ytdlp_info(self, url):
         try:
@@ -1814,6 +1858,115 @@ class SelectQueueDialog(QDialog):
         return queue_id, remember_choice
 
 
+class QualitySelectionDialog(QDialog):
+    def __init__(self, formats: list[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Select Video Quality"))
+        self.setMinimumWidth(400)
+        self.selected_format_id = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(self.tr("Choose video quality:")))
+
+        self.list_widget = QListWidget()
+
+        qualities = self._process_and_sort_formats(formats)
+
+        for label, fmt_id in qualities:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, fmt_id)
+            self.list_widget.addItem(item)
+
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+        layout.addWidget(self.list_widget)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _get_sort_key(self, resolution_str: str) -> int:
+        resolution_str = resolution_str.lower()
+        if "4k" in resolution_str:
+            return 2160
+        numeric_part = re.search(r'(\d+)', resolution_str)
+        if numeric_part:
+            return int(numeric_part.group(1))
+        return 0
+
+    def _process_and_sort_formats(self, formats: list[dict]):
+        seen_resolutions = {}
+        for f in formats:
+            fmt_id = f.get("format_id")
+            label = f.get("resolution")
+
+            if not label or not fmt_id or label.lower() == "unknown":
+                continue
+
+            if label not in seen_resolutions:
+                seen_resolutions[label] = fmt_id
+
+        sorted_labels = sorted(
+            seen_resolutions.keys(),
+            key=self._get_sort_key,
+            reverse=True
+        )
+        return [(label, seen_resolutions[label]) for label in sorted_labels]
+
+    def _on_accept(self):
+        selected = self.list_widget.currentItem()
+        if selected:
+            self.selected_format_id = selected.data(Qt.UserRole)
+        self.accept()
+
+    def get_selected_format_id(self):
+        return self.selected_format_id
+
+
+class LoadingSpinnerWidget(QWidget):
+    """A custom widget that displays a spinning loading animation."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.setInterval(15)
+        self.setMinimumSize(50, 50)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        side = min(self.width(), self.height())
+
+        pen = QPen()
+        pen.setColor(QColor("white") if self.palette().window().color().lightness() < 128 else QColor("black"))
+        pen_width = max(2, int(side / 15.0))
+        pen.setWidth(pen_width)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+
+        margin = pen_width / 2
+        rect = QRectF(margin, margin, side - pen_width, side - pen_width)
+        rect.moveCenter(self.rect().center())
+
+        painter.drawArc(rect, self._angle * 16, 270 * 16)
+
+    def _animate(self):
+        self._angle = (self._angle + 8) % 360
+        self.update()
+
+    def start(self):
+        self.show()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+
 class NewDownloadDialog(QDialog):
     download_added = Signal()
 
@@ -1831,11 +1984,32 @@ class NewDownloadDialog(QDialog):
         self.accepted_action = None
         self.auth_tuple = None
         self.custom_headers_for_download = None
-        self.is_stream_download = False  # New flag
+        self.is_stream_download = False
 
         apply_standalone_style(self, self.settings)
 
+        # --- Blur and Loading Overlay ---
+        self.blur_effect = QGraphicsBlurEffect(self)
+        self.blur_effect.setBlurRadius(8)
+
+        self.loading_overlay = QWidget(self)
+        self.loading_overlay.setStyleSheet("background-color: transparent;")
+        self.loading_overlay.hide()
+
+        self.loading_spinner = LoadingSpinnerWidget(self.loading_overlay)
+        self.loading_spinner.setFixedSize(80, 80)
+
+        # --- Main Content Widget ---
+        self.content_widget = QWidget()
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.content_widget)
+
         # --- UI Setup ---
+        content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setContentsMargins(15, 15, 15, 15)
+        content_layout.setSpacing(12)
+
         form_layout = QFormLayout()
         form_layout.setHorizontalSpacing(15)
         form_layout.setVerticalSpacing(10)
@@ -1901,12 +2075,10 @@ class NewDownloadDialog(QDialog):
         self.download_later_btn.clicked.connect(self._handle_download_later)
         self.download_now_btn.clicked.connect(self._handle_download_now)
         cancel_btn.clicked.connect(self.reject)
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(12)
-        main_layout.addLayout(top_layout)
-        main_layout.addSpacing(10)
-        main_layout.addWidget(button_box)
+
+        content_layout.addLayout(top_layout)
+        content_layout.addSpacing(10)
+        content_layout.addWidget(button_box)
 
     def _add_to_database_and_close(self, db_payload):
         if not db_payload:
@@ -1922,6 +2094,14 @@ class NewDownloadDialog(QDialog):
             logger.error(f"An unexpected error occurred when adding download: {e}")
             QMessageBox.critical(self, self.tr("Database Error"),
                                  self.tr("An unexpected error occurred. Please check the logs."))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.loading_overlay.resize(self.size())
+        self.loading_spinner.move(
+            (self.width() - self.loading_spinner.width()) // 2,
+            (self.height() - self.loading_spinner.height()) // 2
+        )
 
     def _on_save_path_selected(self, index: int):
         """When a user selects a recent path, combine it with the current filename."""
@@ -1939,48 +2119,75 @@ class NewDownloadDialog(QDialog):
         self._metadata_fetcher.result.connect(self.update_metadata_fields)
         self._metadata_fetcher.error.connect(self._handle_metadata_error)
         self._metadata_fetcher.timeout.connect(self._handle_metadata_timeout)
+
+        self.content_widget.setGraphicsEffect(self.blur_effect)
+        self.loading_overlay.show()
+        self.loading_overlay.raise_()
+        self.loading_spinner.start()
+
         QTimer.singleShot(0, self._metadata_fetcher.start)
 
+    def _hide_loading_overlay(self):
+        self.loading_spinner.stop()
+        self.loading_overlay.hide()
+        self.content_widget.setGraphicsEffect(None)
+
     def _handle_metadata_error(self, error_message):
+        self._hide_loading_overlay()
         QMessageBox.warning(self, self.tr("Metadata Error"),
                             self.tr("Could not fetch download information:\n{0}").format(error_message))
         logger.error(f"Metadata Error Slot Called: {error_message}")
+        self.reject()
 
     def _handle_metadata_timeout(self):
+        self._hide_loading_overlay()
         QMessageBox.warning(self, self.tr("Metadata Timeout"),
                             self.tr("Fetching download information timed out."))
         logger.warning("Metadata Timeout Slot Called")
+        self.reject()
 
     def update_metadata_fields(self, metadata: dict):
-        logger.debug(f"NewDownloadDialog: Updating metadata fields with: {metadata}")
         self.fetched_metadata = metadata
-        self.is_stream_download = metadata.get("is_stream", False)  # Update stream flag
+        self.is_stream_download = metadata.get("is_stream", False)
+
+        if self.is_stream_download and metadata.get("formats"):
+            dialog = QualitySelectionDialog(metadata["formats"], self)
+            if dialog.exec() == QDialog.Accepted:
+                selected_format = dialog.get_selected_format_id()
+                if selected_format:
+                    self.fetched_metadata['final_url'] = self.url_display.text()
+                    self.fetched_metadata["selected_format_id"] = selected_format
+            else:
+                video_formats = [f for f in metadata.get("formats", []) if
+                                 f.get("vcodec", "none") != "none" and f.get("height")]
+                if video_formats:
+                    best_format = max(video_formats, key=lambda f: f.get("height", 0))
+                    self.fetched_metadata["selected_format_id"] = best_format.get("format_id")
+                    logger.info(
+                        f"Quality selection cancelled. Defaulting to best format: {best_format.get('resolution')}")
+                else:
+                    self.fetched_metadata["selected_format_id"] = 'best'
+
+        self._hide_loading_overlay()
 
         filename = metadata.get("filename", self.guessed_filename)
         size_bytes = metadata.get("content_length", 0)
 
         self.file_name_preview_label.setText(self.tr("Filename: ") + filename)
-
-        # Adjust size label for streams
         if self.is_stream_download:
-            self.file_size_preview_label.setText(self.tr("Size: Streaming (Unknown)"))
-            default_save_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-            base_filename = Path(filename).stem
-            self.save_path_combo.setCurrentText(str(Path(default_save_dir) / base_filename))
+            self.file_size_preview_label.setText(self.tr("Size: Streaming"))
+            base_filename, _ = os.path.splitext(filename)
+            default_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
+            self.save_path_combo.setCurrentText(str(Path(default_dir) / base_filename))
         else:
             self.file_size_preview_label.setText(self.tr("Size: ") + format_size(size_bytes))
             current_path_in_combo = self.save_path_combo.currentText().strip()
-            if not current_path_in_combo or \
-                    Path(current_path_in_combo).is_dir() or \
-                    Path(current_path_in_combo).name == "downloaded_file":
-                default_save_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-                self.save_path_combo.setCurrentText(str(Path(default_save_dir) / filename))
+            if not current_path_in_combo or Path(current_path_in_combo).is_dir():
+                default_dir = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
+                self.save_path_combo.setCurrentText(str(Path(default_dir) / filename))
 
         icon = get_system_icon_for_file(filename)
-        pixmap = icon.pixmap(48, 48)
-        self.file_icon_label.setPixmap(
-            pixmap if not pixmap.isNull() else QIcon(get_asset_path("assets/icons/file-x.svg")).pixmap(48, 48)
-        )
+        self.file_icon_label.setPixmap(icon.pixmap(48, 48))
 
     def set_initial_data(self, url: str, metadata: dict | None, auth: tuple | None):
         self.url_display.setText(url)
@@ -2078,7 +2285,8 @@ class NewDownloadDialog(QDialog):
             "referrer": self.custom_headers_for_download.get("Referer") if self.custom_headers_for_download else None,
             "custom_headers": self.custom_headers_for_download,
             "auth": self.auth_tuple,
-            "is_stream": self.is_stream_download,  # Save the stream flag to DB
+            "is_stream": self.is_stream_download,
+            "selected_format_id": self.fetched_metadata.get("selected_format_id")
         }
         return data_for_db
 
@@ -2112,185 +2320,6 @@ class NewDownloadDialog(QDialog):
         if self.result() == QDialog.Accepted and self.final_download_id is not None:
             return self.final_download_id, self.accepted_action
         return None, None
-
-
-class NewBatchDownloadDialog(QDialog):
-    def __init__(self, settings: SettingsManager, db: DatabaseManager, urls: list[str], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add Batch Downloads")
-        self.setMinimumSize(750, 500)
-
-        self.settings = settings
-        self.db = db
-        self.final_ids = []
-        self.download_rows = []
-        apply_standalone_style(self, self.settings)
-
-        layout = QVBoxLayout(self)
-
-        # Table setup (6 columns: checkbox, url, filename, size, type, status)
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["✔", "URL", "Filename", "Size", "Type", "Status"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setColumnWidth(0, 40)  # Checkbox
-        layout.addWidget(self.table)
-
-        for url in urls:
-            self._add_row(url.strip())
-
-        # Save path & browse
-        layout.addWidget(QLabel("Save Directory:"))
-        path_layout = QHBoxLayout()
-        self.save_path_combo = QComboBox()
-        self.save_path_combo.setEditable(True)
-        default_path = self.settings.get("default_download_directory", str(Path.home() / "Downloads"))
-        self.save_path_combo.setCurrentText(default_path)
-        for p in self.settings.get("recent_paths", []):
-            self.save_path_combo.addItem(p)
-
-        browse_btn = QPushButton("Browse")
-        browse_btn.clicked.connect(self.browse_path)
-        path_layout.addWidget(self.save_path_combo, 1)
-        path_layout.addWidget(browse_btn)
-        layout.addLayout(path_layout)
-
-        # Queue
-        layout.addWidget(QLabel("Add to Queue:"))
-        self.queue_combo = QComboBox()
-        self.queue_combo.addItem("None (Start Immediately)", None)
-        for q in self.db.get_all_queues():
-            self.queue_combo.addItem(q["name"], q["id"])
-        layout.addWidget(self.queue_combo)
-
-        self.remember_path_checkbox = QCheckBox("Remember this directory")
-        layout.addWidget(self.remember_path_checkbox)
-
-        # Buttons
-        btns = QDialogButtonBox()
-        self.btn_later = btns.addButton("Download Later", QDialogButtonBox.ActionRole)
-        self.btn_now = btns.addButton("Download Now", QDialogButtonBox.AcceptRole)
-        btns.addButton(QDialogButtonBox.Cancel)
-        layout.addWidget(btns)
-
-        self.btn_later.clicked.connect(lambda: self._accept("later"))
-        self.btn_now.clicked.connect(lambda: self._accept("now"))
-        btns.rejected.connect(self.reject)
-
-    def _add_row(self, url):
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-
-        # Column 0: Checkbox
-        check_item = QTableWidgetItem()
-        check_item.setCheckState(Qt.Checked)
-        check_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        self.table.setItem(row, 0, check_item)
-
-        # Columns 1-5: Info
-        self.table.setItem(row, 1, QTableWidgetItem(url))
-        self.table.setItem(row, 2, QTableWidgetItem("Fetching..."))
-        self.table.setItem(row, 3, QTableWidgetItem("..."))
-        self.table.setItem(row, 4, QTableWidgetItem("..."))
-        status_item = QTableWidgetItem("Fetching...")
-        self.table.setItem(row, 5, status_item)
-
-        self.download_rows.append({
-            "url": url,
-            "metadata": None,
-            "row_index": row,
-            "status_item": status_item,
-        })
-
-        self._fetch_metadata_for_row(row, url)
-
-    def _fetch_metadata_for_row(self, row, url):
-        thread = MetadataFetcher(url, auth=None)
-        thread.result.connect(lambda meta: self._set_metadata(row, meta))
-        thread.timeout.connect(lambda: self._set_error(row))
-        thread.error.connect(lambda msg: self._set_error(row))
-        thread.start()
-
-    def _set_metadata(self, row, meta):
-        self.table.item(row, 2).setText(meta.get("filename", "unknown"))
-
-        # Adjust size display for streams
-        if meta.get("is_stream", False):
-            self.table.item(row, 3).setText("Streaming (Unknown)")
-        else:
-            self.table.item(row, 3).setText(format_size(meta.get("content_length", 0)))
-
-        self.table.item(row, 4).setText(meta.get("content_type", ""))
-        self.table.item(row, 5).setText("Ready")
-        self.download_rows[row]["metadata"] = meta
-
-    def _set_error(self, row):
-        self.table.item(row, 2).setText("Error")
-        self.table.item(row, 3).setText("N/A")
-        self.table.item(row, 4).setText("Unknown")
-        error_item = self.table.item(row, 5)
-        error_item.setText("Failed")
-        error_item.setForeground(QColor("red"))
-
-    def browse_path(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.save_path_combo.currentText())
-        if path:
-            self.save_path_combo.setCurrentText(path)
-
-    def _accept(self, how):
-        self.accepted_action = how
-        self._process_downloads(STATUS_CONNECTING if how == "now" else STATUS_QUEUED)
-        self.accept()
-
-    def _process_downloads(self, status):
-        self.final_ids = []
-        save_dir = self.save_path_combo.currentText().strip()
-        queue_id = self.queue_combo.currentData()
-
-        if self.remember_path_checkbox.isChecked():
-            self.settings.set("default_download_directory", save_dir)
-
-        self.settings.add_recent_path(save_dir)
-
-        for row in self.download_rows:
-            row_idx = row["row_index"]
-            if self.table.item(row_idx, 0).checkState() != Qt.Checked:
-                continue
-
-            meta = row["metadata"]
-            if not meta:
-                continue
-
-            filename = self.table.item(row_idx, 2).text()
-            full_path = str(Path(save_dir) / filename)
-
-            is_stream = meta.get("is_stream", False)
-            if is_stream:
-                full_path = str(Path(save_dir) / Path(filename).stem)  # Store path without extension
-
-            payload = {
-                "url": meta.get("final_url", row["url"]),
-                "file_name": filename,
-                "save_path": full_path,
-                "description": "",
-                "status": status,
-                "queue_id": queue_id,
-                "queue_position": 0,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "total_size": meta.get("content_length", 0),
-                "progress": 0, "speed": "", "eta": "", "bytes_downloaded": 0,
-                "is_stream": is_stream,
-            }
-
-            if queue_id is not None:
-                items = self.db.get_downloads_in_queue(queue_id)
-                payload["queue_position"] = max((d.get("queue_position", 0) for d in items), default=0) + 1
-
-            dl_id = self.db.add_download(payload)
-            if dl_id != -1:
-                self.final_ids.append(dl_id)
-
-    def get_results(self):
-        return self.final_ids, self.accepted_action
 
 
 class QueueSelectionDialog(QDialog):
@@ -3507,9 +3536,10 @@ class PIDM(QMainWindow):
             except (json.JSONDecodeError, TypeError):
                 logger.error(f"Failed to decode auth_json for download {download_id}")
 
-        is_stream = dl_entry.get('is_stream', False)  # Get stream flag from DB
+        is_stream = dl_entry.get('is_stream', False)
+        selected_format = dl_entry.get('selected_format_id')
 
-        logger.info(f"Starting worker for ID {download_id} (Is Stream: {is_stream})")
+        logger.info(f"Starting worker for ID {download_id} (Is Stream: {is_stream}, Format: {selected_format})")
         worker = DownloadWorker(
             download_id, self.db, dl_entry["url"], dl_entry["save_path"],
             initial_downloaded_bytes=dl_entry["bytes_downloaded"],
@@ -3517,6 +3547,7 @@ class PIDM(QMainWindow):
             auth=auth_tuple,
             custom_headers=custom_headers,
             is_stream=is_stream,
+            selected_format_id=selected_format,
             parent=self
         )
 
