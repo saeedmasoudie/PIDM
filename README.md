@@ -78,7 +78,7 @@ PIDM supports multiple languages. You can contribute via `.ts` and `.qm` files u
 - [x] Chrome extension
 - [x] Theme-aware SVG icons
 - [x] Speed limiting per download
-- [ ] Stream Download support
+- [x] Stream Download support
 - [ ] Grabbing stream videos in extention
 - [ ] Soon...
 
