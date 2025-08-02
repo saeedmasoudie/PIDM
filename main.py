@@ -444,9 +444,6 @@ class DatabaseManager:
             self.conn = None
             logger.info(f"Database connection to {self.db_path_str} closed.")
 
-    def __del__(self):
-        self.close()
-
 
 class SettingsManager:
     def __init__(self, filename=None):
@@ -544,6 +541,7 @@ class DownloadWorker(QThread):
     status_changed = Signal(str)
     finished_successfully = Signal(str)
     total_size_known = Signal(int)
+    request_file_deletion = Signal(str, str)
     global_speed_limit_bps = None
 
     NUM_CONNECTIONS = 5
@@ -687,12 +685,8 @@ class DownloadWorker(QThread):
                 f"DownloadWorker {self.download_id} was not running (or already finished) when cancel was called.")
 
         download_entry = self.db.get_download_by_id(self.download_id)
-        if self.save_path.exists() and (not download_entry or download_entry.get('status') != STATUS_COMPLETE):
-            try:
-                self.save_path.unlink(missing_ok=True)
-                logger.info(f"Partial file {self.save_path} for {self.download_id} deleted on cancel.")
-            except OSError as e:
-                logger.error(f"Error deleting partial file {self.save_path} for {self.download_id} on cancel: {e}")
+        if download_entry and self.save_path.exists():
+            self.request_file_deletion.emit(str(self.save_path), download_entry['file_name'])
 
         self.resume_helper.delete()
 
@@ -1193,10 +1187,10 @@ class DownloadWorker(QThread):
                     self.finished_successfully.emit(str(self.save_path))
                     self.resume_helper.delete()
                 else:
-                    logger.warning(f"Download {self.download_id}: Declared INCOMPLETE. "
-                                   f"Downloaded: {self._downloaded_bytes} / {self._total_size}. "
-                                   f"Actual on disk: {actual_file_size_on_disk} / {self._total_size}. "
-                                   f"All segments reported complete internally: {all_segments_reported_complete}.")
+                    logger.warning(f"Download {self.download_id}: Marked as INCOMPLETE. Final check failed.")
+                    logger.warning(f"  - Downloaded bytes: {self._downloaded_bytes} / Total size: {self._total_size}")
+                    logger.warning(f"  - Actual size on disk: {actual_file_size_on_disk}")
+                    logger.warning(f"  - All segments reported complete: {all_segments_reported_complete}")
                     self.status_changed.emit(STATUS_INCOMPLETE)
                     self.db.update_status(self.download_id, STATUS_INCOMPLETE)
 
@@ -3556,6 +3550,7 @@ class PIDM(QMainWindow):
         worker.finished_successfully.connect(self._on_worker_finished_successfully)
         worker.total_size_known.connect(self._on_worker_total_size_known)
         worker.original_queue_id = dl_entry.get("queue_id")
+        worker.request_file_deletion.connect(self._delete_associated_files)
 
         self.active_workers[download_id] = {"worker": worker}
         worker.start()
@@ -3564,10 +3559,19 @@ class PIDM(QMainWindow):
     @Slot(str)
     def _on_worker_status_changed(self, status_message: str):
         worker = self.sender()
-        if not isinstance(worker, DownloadWorker): return
+        if not isinstance(worker, DownloadWorker):
+            return
         download_id = worker.download_id
 
-        db_status = self.db.get_download_by_id(download_id).get('status')
+        dl_entry = self.db.get_download_by_id(download_id)
+        if not dl_entry:
+            logger.warning(
+                f"Received status update for non-existent download ID {download_id}, likely already deleted.")
+            if download_id in self.active_workers:
+                del self.active_workers[download_id]
+            return
+
+        db_status = dl_entry.get('status')
         if status_message == STATUS_CANCELLED and db_status == STATUS_PAUSED:
             logger.debug(f"Ignoring CANCELLED signal for {download_id} because it was intentionally paused.")
             if download_id in self.active_workers:
@@ -3588,21 +3592,17 @@ class PIDM(QMainWindow):
                     progress_bar.setRange(0, 100)
                     progress_bar.setValue(100)
                     progress_bar.setFormat("100%")
-
                 elif status_message == STATUS_PAUSED:
                     progress_bar.setRange(0, 100)
                     progress_bar.setFormat(self.tr("Paused"))
-
                 elif "Error" in status_message or status_message == STATUS_INCOMPLETE:
                     progress_bar.setRange(0, 100)
                     progress_bar.setValue(0)
                     progress_bar.setFormat(self.tr("Error"))
-
                 elif status_message == STATUS_QUEUED:
                     progress_bar.setRange(0, 100)
                     progress_bar.setValue(0)
                     progress_bar.setFormat(self.tr("Queued"))
-
                 elif status_message == STATUS_YTDLP:
                     progress_bar.setRange(0, 0)
                     progress_bar.setFormat(self.tr("Streaming..."))
@@ -3924,7 +3924,7 @@ class PIDM(QMainWindow):
         self.update_action_buttons_state()
 
     @Slot()
-    def handle_delete_selected_entry(self): #todo: needs more work ( not complete )
+    def handle_delete_selected_entry(self):
         dl_id = self._get_selected_download_id()
         if dl_id is None: return
         dl_data = self.db.get_download_by_id(dl_id)
@@ -3955,67 +3955,49 @@ class PIDM(QMainWindow):
                 worker.terminate()
 
         if should_delete_files:
-            main_file_path = Path(dl_data["save_path"])
-            final_filename = Path(dl_data['file_name'])
-            save_dir = main_file_path.parent
-
-            if main_file_path.is_dir():
-                main_file_path = save_dir / final_filename
-
-            files_to_delete = {
-                main_file_path,
-                main_file_path.with_suffix(f"{main_file_path.suffix}.part"),
-                main_file_path.with_suffix(f"{main_file_path.suffix}.resume"),
-                main_file_path.with_suffix(f"{main_file_path.suffix}.ytdl")
-            }
-
-            if not main_file_path.suffix:
-                files_to_delete.add(Path(str(main_file_path) + ".part"))
-
-            try:
-                base_name = main_file_path.name
-                for frag_file in save_dir.glob(f"{re.escape(base_name)}.part-Frag*"):
-                    files_to_delete.add(frag_file)
-            except Exception as e:
-                logger.warning(f"Could not search for fragment files: {e}")
-
-            max_retries = 5
-            retry_delay = 0.5  # seconds
-            for i in range(max_retries):
-                try:
-                    remaining_files = set()
-                    for file_path in files_to_delete:
-                        if file_path.exists():
-                            try:
-                                logger.debug(f"Attempt {i + 1}: Deleting {file_path}")
-                                file_path.unlink()
-                                logger.info(f"Deleted {file_path}")
-                            except OSError as e:
-                                logger.warning(f"Could not delete {file_path} on attempt {i + 1}: {e}")
-                                remaining_files.add(file_path)
-
-                    files_to_delete = remaining_files
-                    if not files_to_delete:
-                        logger.info("All files deleted successfully.")
-                        break
-
-                    logger.debug(f"End of attempt {i + 1}, remaining files: {files_to_delete}")
-                    if i < max_retries - 1:
-                        time.sleep(retry_delay)
-
-                except Exception as e:
-                    logger.error(f"An unexpected error occurred during file deletion: {e}")
-                    break
-
-            if files_to_delete:
-                logger.error(f"Final deletion attempt failed. Could not delete: {files_to_delete}")
-                QMessageBox.warning(self, self.tr("File Deletion Error"),
-                                    self.tr(
-                                        "Could not delete all associated files. One or more files may still be locked."))
+            self._delete_associated_files(dl_data["save_path"], dl_data["file_name"])
 
         self.db.delete_download(dl_id)
         self._remove_row_from_table_by_id(dl_id)
         self.update_action_buttons_state()
+
+    def _delete_associated_files(self, save_path_str: str, file_name_str: str):
+        """A robust helper to delete all files associated with a download."""
+        logger.info(f"Deleting files for save path: {save_path_str}")
+        main_file_path = Path(save_path_str)
+        final_filename = Path(file_name_str)
+        save_dir = main_file_path.parent
+
+        if main_file_path.is_dir():
+            main_file_path = save_dir / final_filename
+
+        files_to_delete = {
+            main_file_path,
+            Path(str(main_file_path) + ".resume"),
+            Path(str(main_file_path) + ".ytdl"),
+            Path(str(main_file_path) + ".part"),
+        }
+
+        try:
+            for file_path in files_to_delete:
+                if file_path.exists():
+                    logger.debug(f"Deleting: {file_path}")
+                    file_path.unlink()
+
+            stem_base = main_file_path.stem
+            for extra_file in main_file_path.parent.glob(stem_base + "*"):
+                if extra_file.suffix in [".part", ".temp", ".ytdl", ".resume"] and extra_file.exists():
+                    logger.debug(f"Cleaning up residual file: {extra_file}")
+                    try:
+                        extra_file.unlink()
+                    except Exception as e:
+                        logger.warning(f"Could not delete {extra_file}: {e}")
+
+            logger.info(f"Successfully deleted associated files for {file_name_str}.")
+        except OSError as e:
+            logger.error(f"Error during file deletion for {file_name_str}: {e}")
+            QMessageBox.warning(self, self.tr("File Deletion Error"),
+                                self.tr(f"Could not delete file: {e.filename}\nError: {e.strerror}"))
 
     def _remove_row_from_table_by_id(self, download_id: int):
         row = self.download_id_to_row_map.pop(download_id, None)
