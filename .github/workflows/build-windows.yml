@@ -1,0 +1,50 @@
+name: Build Windows Executable with Nuitka
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install nuitka
+
+      - name: 🛠️ Compile with Nuitka
+        run: |
+          nuitka main.py ^
+            --standalone ^
+            --enable-plugin=pyside6 ^
+            --windows-console-mode=disable ^
+            --windows-icon-from-ico=pidm_icon.ico ^
+            --output-filename=PIDM.exe ^
+            --windows-company-name="PIDM" ^
+            --windows-product-name="Python Internet Download Manager" ^
+            --windows-file-version="1.2.0" ^
+            --windows-product-version="1.2.0"
+
+      - name: 📂 Copy extra folders (assets, translations, bin)
+        run: |
+          mkdir build_output
+          xcopy /E /I /Y main.dist build_output\
+          if exist assets xcopy /E /I /Y assets build_output\assets\
+          if exist translations xcopy /E /I /Y translations build_output\translations\
+          if exist bin xcopy /E /I /Y bin build_output\bin\
+
+      - name: 📦 Upload compiled build as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: PIDM-windows-build
+          path: build_output
