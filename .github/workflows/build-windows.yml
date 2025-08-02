@@ -9,7 +9,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/upload-artifact@v4
 
       - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v4
@@ -44,7 +44,7 @@ jobs:
           if exist bin xcopy /E /I /Y bin build_output\bin\
 
       - name: 📦 Upload compiled build as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: PIDM-windows-build
           path: build_output
