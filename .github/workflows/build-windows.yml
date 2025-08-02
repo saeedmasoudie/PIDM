@@ -23,17 +23,35 @@ jobs:
           pip install nuitka
 
       - name: 🛠️ Compile with Nuitka
+        shell: pwsh
         run: |
-          nuitka main.py ^
-            --standalone ^
-            --enable-plugin=pyside6 ^
-            --windows-console-mode=disable ^
-            --windows-icon-from-ico=pidm_icon.ico ^
-            --output-filename=PIDM.exe ^
-            --windows-company-name="PIDM" ^
-            --windows-product-name="Python Internet Download Manager" ^
-            --windows-file-version="1.2.0" ^
-            --windows-product-version="1.2.0"
+          $env:NUITKA_DEPENDENCY_SCAN = "1"
+
+          python -m nuitka `
+            main.py `
+            --standalone `
+            --disable-console `
+            --enable-plugin=pyside6 `
+            --nofollow-imports `
+            --noinclude-pytest-mode=nofollow `
+            --noinclude-unittest-mode=nofollow `
+            --nofollow-import-to=tkinter,test,pydoc `
+            --include-data-dir=assets=assets `
+            --include-qt-plugins=all `
+            --windows-icon-from-ico=assets/pidm_icon.ico `
+            --output-dir=dist `
+            --output-filename="PIDM" `
+            --windows-company-name="PIDM" `
+            --windows-product-name="Python Internet Download Manager" `
+            --windows-file-version="1.2.0" `
+            --windows-product-version="1.2.0" `
+            --remove-output `
+            --assume-yes-for-downloads
+
+          if (!(Test-Path "dist\\$output")) {
+            Write-Host "::error::Windows .exe not created"
+            exit 1
+          }
 
       - name: ✅ Verify main.dist exists
         run: |
