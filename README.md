@@ -8,6 +8,7 @@ PIDM is a powerful and modern internet download manager written in Python using 
 
 ## 🔥 Features
 
+- 🔥 Support Stream downloads ( youtube , twitch , netflix and ... )
 - ✅ Modern Qt-based interface (PySide6)
 - 🚀 Multithreaded download engine with resume support
 - 📁 Queue system with scheduling and concurrent limits
@@ -79,7 +80,7 @@ PIDM supports multiple languages. You can contribute via `.ts` and `.qm` files u
 - [x] Theme-aware SVG icons
 - [x] Speed limiting per download
 - [x] Stream Download support
-- [ ] Grabbing stream videos in extention
+- [x] Grabbing stream videos in extention
 - [ ] Soon...
 
 ---
