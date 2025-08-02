@@ -38,7 +38,7 @@ jobs:
             --nofollow-import-to=tkinter,test,pydoc `
             --include-data-dir=assets=assets `
             --include-qt-plugins=all `
-            --windows-icon-from-ico=assets/pidm_icon.ico `
+            --windows-icon-from-ico=assets/icons/pidm_icon.ico `
             --output-dir=dist `
             --output-filename="PIDM" `
             --windows-company-name="PIDM" `
