@@ -36,7 +36,7 @@ jobs:
             --include-qt-plugins=all `
             --noinclude-pytest-mode=nofollow `
             --noinclude-unittest-mode=nofollow `
-            --nofollow-import-to=tkinter,test,pydoc `
+            --nofollow-import-to=tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub ^
             --include-data-dir=assets=assets `
             --windows-icon-from-ico=assets/icons/pidm_icon.ico `
             --output-dir=dist `
