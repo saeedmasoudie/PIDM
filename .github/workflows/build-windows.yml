@@ -50,13 +50,14 @@ jobs:
         run: |
           if not exist dist\PIDM.exe (
             echo "❌ PIDM.exe not found. Build failed."
+            dir dist
             exit 1
           )
 
       - name: 📂 Copy extra folders (assets, translations, bin)
         run: |
           mkdir build_output
-          xcopy /E /I /Y dist\PIDM.dist build_output\
+          xcopy /E /I /Y dist\main.dist build_output\
           if exist assets xcopy /E /I /Y assets build_output\assets\
           if exist translations xcopy /E /I /Y translations build_output\translations\
           if exist bin xcopy /E /I /Y bin build_output\bin\
