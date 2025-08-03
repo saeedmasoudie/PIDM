@@ -26,7 +26,6 @@ jobs:
           pip install nuitka
 
       - name: 🛠️ Compile with Nuitka
-        shell: pwsh
         run: >
           python -m nuitka main.py
           --standalone
@@ -35,11 +34,10 @@ jobs:
           --include-qt-plugins=all
           --noinclude-pytest-mode=nofollow
           --noinclude-unittest-mode=nofollow
-          --nofollow-import-to=tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub
+          --nofollow-import-to="tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub"
           --include-data-dir=assets=assets
           --windows-icon-from-ico=assets/icons/pidm_icon.ico
           --output-dir=dist
-          --output-filename=PIDM
           --windows-company-name="PIDM"
           --windows-product-name="Python Internet Download Manager"
           --windows-file-version=1.2.0
@@ -47,11 +45,11 @@ jobs:
           --remove-output
           --assume-yes-for-downloads
 
-      - name: ✅ Verify dist/PIDM.exe exists
+      - name: ✅ Verify dist/main.exe exists
         shell: cmd
         run: |
-          if not exist dist\PIDM.exe (
-            echo ❌ PIDM.exe not found. Build failed.
+          if not exist dist\main.exe (
+            echo ❌ main.exe not found. Build failed.
             dir dist
             exit 1
           )
@@ -60,6 +58,7 @@ jobs:
         run: |
           mkdir build_output
           xcopy /E /I /Y dist\main.dist build_output\
+          copy dist\main.exe build_output\PIDM.exe
           if exist assets xcopy /E /I /Y assets build_output\assets\
           if exist translations xcopy /E /I /Y translations build_output\translations\
           if exist bin xcopy /E /I /Y bin build_output\bin\
