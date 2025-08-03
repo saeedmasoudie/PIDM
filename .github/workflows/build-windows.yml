@@ -26,24 +26,26 @@ jobs:
           pip install nuitka
 
       - name: 🛠️ Compile with Nuitka
-        run: >
-          python -m nuitka main.py
-          --standalone
-          --windows-console-mode=disable
-          --enable-plugin=pyside6
-          --include-qt-plugins=all
-          --noinclude-pytest-mode=nofollow
-          --noinclude-unittest-mode=nofollow
-          --nofollow-import-to="tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub"
-          --include-data-dir=assets=assets
-          --windows-icon-from-ico=assets/icons/pidm_icon.ico
-          --output-dir=dist
-          --windows-company-name="PIDM"
-          --windows-product-name="Python Internet Download Manager"
-          --windows-file-version=1.2.0
-          --windows-product-version=1.2.0
-          --remove-output
-          --assume-yes-for-downloads
+        shell: cmd
+        run: |
+          python -m nuitka main.py ^
+            --standalone ^
+            --windows-console-mode=disable ^
+            --enable-plugin=pyside6 ^
+            --include-qt-plugins=all ^
+            --noinclude-pytest-mode=nofollow ^
+            --noinclude-unittest-mode=nofollow ^
+            --nofollow-import-to=tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub ^
+            --include-data-dir=assets=assets ^
+            --windows-icon-from-ico=assets/icons/pidm_icon.ico ^
+            --output-dir=dist ^
+            --output-filename=main ^
+            --windows-company-name="PIDM" ^
+            --windows-product-name="Python Internet Download Manager" ^
+            --windows-file-version=1.2.0 ^
+            --windows-product-version=1.2.0 ^
+            --remove-output ^
+            --assume-yes-for-downloads
 
       - name: ✅ Verify dist/main.exe exists
         shell: cmd
@@ -55,6 +57,7 @@ jobs:
           )
 
       - name: 📂 Copy extra folders (assets, translations, bin)
+        shell: cmd
         run: |
           mkdir build_output
           xcopy /E /I /Y dist\main.dist build_output\
