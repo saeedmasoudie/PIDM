@@ -11,6 +11,9 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
+      - name: 🧰 Install Visual Studio Build Tools (includes mspdbcore.dll)
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -25,55 +28,40 @@ jobs:
       - name: 🛠️ Compile with Nuitka
         shell: pwsh
         run: |
-          $env:NUITKA_DEPENDENCY_SCAN = "1"
-
           python -m nuitka `
             main.py `
             --standalone `
-            --disable-console `
+            --windows-console-mode=disable `
             --enable-plugin=pyside6 `
-            --nofollow-imports `
+            --include-qt-plugins=all `
             --noinclude-pytest-mode=nofollow `
             --noinclude-unittest-mode=nofollow `
             --nofollow-import-to=tkinter,test,pydoc `
             --include-data-dir=assets=assets `
-            --include-qt-plugins=all `
             --windows-icon-from-ico=assets/icons/pidm_icon.ico `
             --output-dir=dist `
-            --output-filename="PIDM" `
+            --output-filename=PIDM `
             --windows-company-name="PIDM" `
             --windows-product-name="Python Internet Download Manager" `
-            --windows-file-version="1.2.0" `
-            --windows-product-version="1.2.0" `
+            --windows-file-version=1.2.0 `
+            --windows-product-version=1.2.0 `
             --remove-output `
             --assume-yes-for-downloads
 
-          if (!(Test-Path "dist\\$output")) {
-            Write-Host "::error::Windows .exe not created"
-            exit 1
-          }
-
-      - name: ✅ Verify main.dist exists
+      - name: ✅ Verify dist/PIDM.exe exists
         run: |
-          if not exist main.dist (
-            echo "❌ main.dist not found. Nuitka may have failed to compile."
+          if not exist dist\PIDM.exe (
+            echo "❌ PIDM.exe not found. Build failed."
             exit 1
           )
 
       - name: 📂 Copy extra folders (assets, translations, bin)
         run: |
           mkdir build_output
-          xcopy /E /I /Y main.dist build_output\
+          xcopy /E /I /Y dist\main.dist build_output\
           if exist assets xcopy /E /I /Y assets build_output\assets\
           if exist translations xcopy /E /I /Y translations build_output\translations\
           if exist bin xcopy /E /I /Y bin build_output\bin\
-
-      - name: ✅ Verify build_output is ready
-        run: |
-          if not exist build_output (
-            echo "❌ build_output folder not found!"
-            exit 1
-          )
 
       - name: 📦 Upload compiled build as artifact
         uses: actions/upload-artifact@v4
