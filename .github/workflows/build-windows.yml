@@ -26,6 +26,7 @@ jobs:
           pip install nuitka
 
       - name: 🛠️ Compile with Nuitka
+        shell: pwsh
         run: >
           python -m nuitka main.py
           --standalone
@@ -34,7 +35,7 @@ jobs:
           --include-qt-plugins=all
           --noinclude-pytest-mode=nofollow
           --noinclude-unittest-mode=nofollow
-          --nofollow-import-to="tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub"
+          --nofollow-import-to=tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub
           --include-data-dir=assets=assets
           --windows-icon-from-ico=assets/icons/pidm_icon.ico
           --output-dir=dist
@@ -47,9 +48,10 @@ jobs:
           --assume-yes-for-downloads
 
       - name: ✅ Verify dist/PIDM.exe exists
+        shell: cmd
         run: |
           if not exist dist\PIDM.exe (
-            echo "❌ PIDM.exe not found. Build failed."
+            echo ❌ PIDM.exe not found. Build failed.
             dir dist
             exit 1
           )
