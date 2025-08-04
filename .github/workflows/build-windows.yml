@@ -31,9 +31,9 @@ jobs:
         run: |
           python -m nuitka main.py ^
             --standalone ^
-            --windows-disable-console ^
+            --windows-console-mode=disable ^
             --enable-plugin=pyside6 ^
-            --include-qt-plugins=imageformats,platforms,styles,printsupport ^
+            --include-qt-plugins=imageformats,platforms,styles ^
             --nofollow-import-to=tkinter,test,pydoc ^
             --nofollow-import-to=yt_dlp.extractor.lazy_extractors ^
             --nofollow-import-to=yt_dlp.extractor.packtpub ^
