@@ -11,13 +11,14 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🧰 Install Visual Studio Build Tools (includes mspdbcore.dll)
+      - name: 🧰 Install Visual Studio Build Tools
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: 🐍 Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: 📦 Install dependencies
         run: |
@@ -30,44 +31,40 @@ jobs:
         run: |
           python -m nuitka main.py ^
             --standalone ^
-            --windows-console-mode=disable ^
+            --windows-disable-console ^
             --enable-plugin=pyside6 ^
-            --include-qt-plugins=all ^
-            --noinclude-pytest-mode=nofollow ^
-            --noinclude-unittest-mode=nofollow ^
-            --nofollow-import-to=tkinter,test,pydoc,yt_dlp.extractor.lazy_extractors,yt_dlp.extractor.packtpub ^
+            --include-qt-plugins=imageformats,platforms,styles,printsupport ^
+            --nofollow-import-to=tkinter,test,pydoc ^
+            --nofollow-import-to=yt_dlp.extractor.lazy_extractors ^
+            --nofollow-import-to=yt_dlp.extractor.packtpub ^
             --include-data-dir=assets=assets ^
+            --include-data-dir=translations=translations ^
+            --include-data-dir=bin=bin ^
             --windows-icon-from-ico=assets/icons/pidm_icon.ico ^
-            --output-dir=dist ^
-            --output-filename=main ^
+            --output-dir=build_output ^
+            --output-filename=PIDM ^
             --windows-company-name="PIDM" ^
             --windows-product-name="Python Internet Download Manager" ^
             --windows-file-version=1.2.0 ^
             --windows-product-version=1.2.0 ^
             --remove-output ^
-            --assume-yes-for-downloads
+            --assume-yes-for-downloads ^
+            --jobs=%NUMBER_OF_PROCESSORS% ^
+            --lto=yes
 
-      - name: ✅ Verify dist/main.exe exists
+      - name: ✅ Verify Executable Exists
         shell: cmd
         run: |
-          if not exist dist\main.exe (
-            echo ❌ main.exe not found. Build failed.
-            dir dist
+          if not exist build_output\PIDM.exe (
+            echo ❌ PIDM.exe not found in build_output. Build failed.
+            dir build_output
             exit 1
+          ) else (
+            echo ✅ PIDM.exe found successfully.
           )
-
-      - name: 📂 Copy extra folders (assets, translations, bin)
-        shell: cmd
-        run: |
-          mkdir build_output
-          xcopy /E /I /Y dist\main.dist build_output\
-          copy dist\main.exe build_output\PIDM.exe
-          if exist assets xcopy /E /I /Y assets build_output\assets\
-          if exist translations xcopy /E /I /Y translations build_output\translations\
-          if exist bin xcopy /E /I /Y bin build_output\bin\
 
       - name: 📦 Upload compiled build as artifact
         uses: actions/upload-artifact@v4
         with:
           name: PIDM-windows-build
-          path: build_output
+          path: build_output/
