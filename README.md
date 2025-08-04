@@ -2,24 +2,22 @@
 
 <img src="screenshots/pidm.png" alt="PIDM logo" width="128" height="128">
 
-PIDM is a powerful and modern internet download manager written in Python using PySide6 (Qt). It features advanced queue handling, browser extension integration, metadata prefetching, resume support, and a clean, theme-aware GUI.
+**PIDM** is a modern, open-source internet download manager written in Python and powered by PySide6 (Qt). It features full support for stream and file downloads, Chrome extension integration, smart UI features, and multi-language support — all in a beautiful, theme-aware desktop application.
 
 ---
 
-## 🔥 Features
+## 🔥 Key Features
 
-- 🔥 Support Stream downloads ( youtube , twitch , netflix and ... )
-- ✅ Modern Qt-based interface (PySide6)
-- 🚀 Multithreaded download engine with resume support
-- 📁 Queue system with scheduling and concurrent limits
-- 🌐 Browser extension support (Chrome-based)
-- 🧠 Smart metadata prefetch (type, size, name)
-- 🎨 Light/Dark theme with auto-detection
-- 💾 Persistent SQLite database & resume metadata
-- 🌍 Multilingual support (English, فارسی, ...)
-- 🔐 Authentication handling (Basic/Digest)
-- 📡 Global & per-download speed limiter
-- 🔌 Proxy messaging support for browser triggers
+- 🎞️ **Stream downloads** from YouTube, Twitch, Netflix, and more (via `yt_dlp`)
+- 📥 **File downloads** with multithreading and parallel chunking (`httpx`)
+- 🧩 **Browser extension** for Chrome-based browsers (via [PIDM-ext](https://github.com/saeedmasoudie/PIDM-ext))
+- 🗂️ **Queue system** with concurrent downloads and scheduling
+- 🌈 **Theme-aware UI** (automatic light/dark mode)
+- 🌐 **Multi-language support** (English, فارسی, ...)
+- 💻 **Lightweight and fast** standalone Windows build via Nuitka
+- 🔐 **Login/auth support**, global and per-download speed limits
+- 💽 **SQLite-based session persistence** (downloads remembered between launches)
+- 🌍 **Proxy communication support** for external triggers
 
 ---
 
@@ -32,57 +30,76 @@ PIDM is a powerful and modern internet download manager written in Python using 
 
 ## 🛠️ Installation
 
-### 🔽 Download Executable (Windows)
+### 🔽 Download for Windows
 
-> Download the latest release from the [Releases](https://github.com/saeedmasoudie/PIDM/releases) page.
+Get the latest `.exe` from the [Releases](https://github.com/saeedmasoudie/PIDM/releases) page.
 
-### 🔽 Extention Source (Chrome)
+### 🧩 Install Browser Extension
 
-> Download the latest release from the [Repository](https://github.com/saeedmasoudie/PIDM-ext).
+Source and updates available at [PIDM Extension Repository](https://github.com/saeedmasoudie/PIDM-ext)
 
-### ⚙️ Run From Source
+### ⚙️ Run from Source (Linux/Mac/Dev)
 
-1. **Clone the repo**:
+1. Clone the repo:
     ```bash
-    git clone https://github.com/yourusername/pidm-download-manager.git
-    cd pidm-download-manager
+    git clone https://github.com/saeedmasoudie/PIDM.git
+    cd PIDM
     ```
 
-2. **Install dependencies**:
+2. Install dependencies:
     ```bash
     pip install -r requirements.txt
     ```
 
-3. **Run the app**:
+3. Run the app:
     ```bash
     python main.py
     ```
 
-## 🧪 Requirements (for Run From Source)
+---
+
+## 📦 Requirements (for source version)
 
 - Python 3.9+
+- [ffmpeg](https://ffmpeg.org/) (for stream muxing)
 - PySide6
 - httpx
-- sqlite3 (built-in)
-- Other dependencies in `requirements.txt`
+- yt_dlp
+- Others as listed in `requirements.txt`
 
 ---
 
-## 🌍 Translation
+## 🌍 Translations
 
-PIDM supports multiple languages. You can contribute via `.ts` and `.qm` files under `assets/translations`.
+PIDM is available in multiple languages. You can help improve translations or add your own by editing `.ts` files in `assets/translations`.
 
 ---
 
-## 🧩 Roadmap
+## 🚧 Roadmap
 
-- [x] Chrome extension
-- [x] Theme-aware SVG icons
-- [x] Speed limiting per download
-- [x] Stream Download support
-- [x] Grabbing stream videos in extention
-- [ ] Specific network for downloads
-- [ ] Add support for torrent downloads
+**Completed:**
+- ✅ Stream downloads with format selection
+- ✅ Browser extension integration
+- ✅ Smart UI with metadata previews
+- ✅ Concurrent download queuing
+- ✅ Calendar-based scheduling for download start times
+
+**Planned / In Progress:**
+- 🔁 Rework scheduling with more advanced rules and options
+- 🧲 Torrent support
+- 🌐 Network interface selection
+
+---
+
+## 🤝 Credits
+
+PIDM uses the following open-source tools:
+
+- [`yt_dlp`](https://github.com/yt-dlp/yt-dlp) – for stream downloads
+- [`ffmpeg`](https://ffmpeg.org/) – for media processing
+- [`httpx`](https://www.python-httpx.org/) – for robust HTTP file downloads
+- [`PySide6`](https://doc.qt.io/qtforpython/) – Qt-based GUI toolkit
+- [`Nuitka`](https://nuitka.net/) – compiler for generating standalone builds
 
 ---
 
@@ -94,17 +111,17 @@ MIT License © [Saeed Masoudi](https://github.com/saeedmasoudie)
 
 ## ❤️ Contributing
 
-Pull requests, bug reports, and feature suggestions are welcome!
+Pull requests and ideas are welcome!
 
 1. Fork the repo
-2. Create your branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m "Add new feature"`
-4. Push to the branch: `git push origin feature/your-feature`
+2. Create a branch: `git checkout -b feature/your-feature`
+3. Commit changes: `git commit -m "Add feature"`
+4. Push: `git push origin feature/your-feature`
 5. Open a pull request
 
 ---
 
 ## 📫 Contact
 
-For feedback or bug reports, open an issue or reach out via GitHub Discussions.
-
+Have suggestions or questions?  
+Use [GitHub Issues](https://github.com/saeedmasoudie/PIDM/issues) or join the [Discussions](https://github.com/saeedmasoudie/PIDM/discussions).
