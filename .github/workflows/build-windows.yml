@@ -41,13 +41,11 @@ jobs:
             --include-data-dir=translations=translations ^
             --include-data-dir=bin=bin ^
             --windows-icon-from-ico=assets/icons/pidm_icon.ico ^
-            --output-dir=build_output ^
             --output-filename=PIDM ^
             --windows-company-name="PIDM" ^
             --windows-product-name="Python Internet Download Manager" ^
             --windows-file-version=1.2.0 ^
             --windows-product-version=1.2.0 ^
-            --remove-output ^
             --assume-yes-for-downloads ^
             --jobs=%NUMBER_OF_PROCESSORS% ^
             --lto=yes
@@ -55,9 +53,9 @@ jobs:
       - name: ✅ Verify Executable Exists
         shell: cmd
         run: |
-          if not exist build_output\PIDM.exe (
-            echo ❌ PIDM.exe not found in build_output. Build failed.
-            dir build_output
+          if not exist main.dist\PIDM.exe (
+            echo ❌ PIDM.exe not found in main.dist. Build failed.
+            dir main.dist
             exit 1
           ) else (
             echo ✅ PIDM.exe found successfully.
@@ -67,4 +65,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PIDM-windows-build
-          path: build_output/
+          path: main.dist/
