@@ -26,6 +26,16 @@ jobs:
           pip install -r requirements.txt
           pip install nuitka
 
+      - name: 📥 Download FFmpeg
+        shell: pwsh
+        run: |
+          mkdir -p bin
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+          7z x ffmpeg.zip -offmpeg_extracted
+          Copy-Item "ffmpeg_extracted/ffmpeg-*/bin/ffmpeg.exe" -Destination "bin/ffmpeg.exe"
+          Remove-Item ffmpeg.zip, ffmpeg_extracted -Recurse
+
       - name: 🛠️ Compile with Nuitka
         shell: cmd
         run: |
