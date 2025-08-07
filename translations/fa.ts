@@ -311,315 +311,325 @@
 <context>
     <name>PIDM</name>
     <message>
-        <location filename="main.py" line="2960"/>
-        <source>Python Internet Download Manager (PIDM)</source>
-        <translation>پایتون اینترنت دانلود منیجر (PIDM)</translation>
+        <location filename="main.py" line="2965"/>
+        <source>Python Internet Download Manager {self.app_version}</source>
+        <translation>مدیریت دانلود اینترنت پایتون {self.app_version}</translation>
     </message>
     <message>
-        <location filename="main.py" line="2975"/>
+        <location filename="main.py" line="2976"/>
         <source>Compressed</source>
         <translation>فشرده</translation>
     </message>
     <message>
-        <location filename="main.py" line="2977"/>
+        <location filename="main.py" line="2978"/>
         <source>Documents</source>
         <translation>اسناد</translation>
     </message>
     <message>
-        <location filename="main.py" line="2979"/>
+        <location filename="main.py" line="2980"/>
         <source>Music</source>
         <translation>موسیقی</translation>
     </message>
     <message>
-        <location filename="main.py" line="2980"/>
+        <location filename="main.py" line="2981"/>
         <source>Videos</source>
         <translation>ویدیوها</translation>
     </message>
     <message>
-        <location filename="main.py" line="2982"/>
+        <location filename="main.py" line="2983"/>
         <source>Programs</source>
         <translation>برنامه‌ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="3004"/>
+        <location filename="main.py" line="3005"/>
         <source>Main Toolbar</source>
         <translation>نوار ابزار اصلی</translation>
     </message>
     <message>
-        <location filename="main.py" line="3009"/>
+        <location filename="main.py" line="3010"/>
         <source>&amp;Add URL</source>
         <translation>&amp;افزودن لینک</translation>
     </message>
     <message>
-        <location filename="main.py" line="3013"/>
+        <location filename="main.py" line="3014"/>
         <source>&amp;Resume</source>
         <translation>&amp;ادامه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3017"/>
+        <location filename="main.py" line="3018"/>
         <source>&amp;Pause</source>
         <translation>&amp;توقف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3023"/>
+        <location filename="main.py" line="3024"/>
         <source>Start &amp;Queue</source>
         <translation>شروع &amp;صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3027"/>
+        <location filename="main.py" line="3028"/>
         <source>S&amp;top Queue</source>
         <translation>&amp;توقف صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3033"/>
+        <location filename="main.py" line="3034"/>
         <source>&amp;Remove Entry</source>
         <translation>&amp;حذف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3037"/>
+        <location filename="main.py" line="3038"/>
         <source>&amp;Cancel D/L</source>
         <translation>&amp;لغو دانلود</translation>
     </message>
     <message>
-        <location filename="main.py" line="3041"/>
+        <location filename="main.py" line="3042"/>
         <source>Stop A&amp;ll</source>
         <translation>توقف &amp;همه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3047"/>
+        <location filename="main.py" line="3048"/>
         <source>Report Bugs</source>
         <translation>گزارش اشکالات</translation>
     </message>
     <message>
-        <location filename="main.py" line="3051"/>
+        <location filename="main.py" line="3052"/>
         <source>Report a bug or suggest a feature</source>
         <translation>گزارش اشکال یا پیشنهادات</translation>
     </message>
     <message>
-        <location filename="main.py" line="3066"/>
+        <location filename="main.py" line="3054"/>
+        <source>Donate</source>
+        <translation>حمایت</translation>
+    </message>
+    <message>
+        <location filename="main.py" line="3058"/>
+        <source>Support the project by a simple donate</source>
+        <translation>با یک کمک مالی ساده از پروژه حمایت کنید</translation>
+    </message>
+    <message>
+        <location filename="main.py" line="3074"/>
         <source>ID</source>
         <translation>شناسه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3066"/>
+        <location filename="main.py" line="3074"/>
         <source>File Name</source>
         <translation>نام فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="3066"/>
+        <location filename="main.py" line="3074"/>
         <source>Size</source>
         <translation>اندازه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3066"/>
+        <location filename="main.py" line="3074"/>
         <source>Status</source>
         <translation>وضعیت</translation>
     </message>
     <message>
-        <location filename="main.py" line="3067"/>
+        <location filename="main.py" line="3075"/>
         <source>Progress</source>
         <translation>پیشرفت</translation>
     </message>
     <message>
-        <location filename="main.py" line="3067"/>
+        <location filename="main.py" line="3075"/>
         <source>Speed</source>
         <translation>سرعت</translation>
     </message>
     <message>
-        <location filename="main.py" line="3067"/>
+        <location filename="main.py" line="3075"/>
         <source>Time Left</source>
         <translation>زمان باقی مانده</translation>
     </message>
     <message>
-        <location filename="main.py" line="3068"/>
+        <location filename="main.py" line="3076"/>
         <source>Date Added</source>
         <translation>تاریخ اضافه شدن</translation>
     </message>
     <message>
-        <location filename="main.py" line="3069"/>
+        <location filename="main.py" line="3077"/>
         <source>Save Path</source>
         <translation>مسیر ذخیره</translation>
     </message>
     <message>
-        <location filename="main.py" line="3108"/>
+        <location filename="main.py" line="3116"/>
         <source>&amp;Tasks</source>
         <translation>&amp;وظایف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3120"/>
+        <location filename="main.py" line="3128"/>
         <source>&amp;File</source>
         <translation>&amp;فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="3121"/>
+        <location filename="main.py" line="3129"/>
         <source>E&amp;xit</source>
         <translation>&amp;خروج</translation>
     </message>
     <message>
-        <location filename="main.py" line="3126"/>
+        <location filename="main.py" line="3134"/>
         <source>&amp;Options</source>
         <translation>&amp;گزینه‌ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="3129"/>
+        <location filename="main.py" line="3137"/>
         <source>&amp;Theme</source>
         <translation>&amp;قالب</translation>
     </message>
     <message>
-        <location filename="main.py" line="3136"/>
+        <location filename="main.py" line="3144"/>
         <source>Dark</source>
         <translation>تاریک</translation>
     </message>
     <message>
-        <location filename="main.py" line="3141"/>
+        <location filename="main.py" line="3149"/>
         <source>Light</source>
         <translation>روشن</translation>
     </message>
     <message>
-        <location filename="main.py" line="3153"/>
+        <location filename="main.py" line="3161"/>
         <source>Language</source>
         <translation>زبان</translation>
     </message>
     <message>
-        <location filename="main.py" line="3175"/>
+        <location filename="main.py" line="3183"/>
         <source>Global Speed Limiter</source>
         <translation>محدود کننده سرعت</translation>
     </message>
     <message>
-        <location filename="main.py" line="3179"/>
+        <location filename="main.py" line="3187"/>
         <source>View Logs</source>
         <translation>مشاهده گزارش‌ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="3183"/>
+        <location filename="main.py" line="3191"/>
         <source>&amp;Help</source>
         <translation>&amp;کمک</translation>
     </message>
     <message>
-        <location filename="main.py" line="3184"/>
+        <location filename="main.py" line="3192"/>
         <source>&amp;About PIDM</source>
         <translation>&amp;درباره پای دی ام</translation>
     </message>
     <message>
-        <location filename="main.py" line="3194"/>
+        <location filename="main.py" line="3202"/>
         <source>PIDM - Python Internet Download Manager</source>
         <translation>مدیریت دانلود PIDM</translation>
     </message>
     <message>
-        <location filename="main.py" line="3211"/>
+        <location filename="main.py" line="3219"/>
         <source>Show PIDM</source>
         <translation>نمایش برنامه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3212"/>
+        <location filename="main.py" line="3220"/>
         <source>Exit</source>
         <translation>خروج</translation>
     </message>
     <message>
-        <location filename="main.py" line="3232"/>
+        <location filename="main.py" line="3240"/>
         <source>All Downloads</source>
         <translation>همه دانلود ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="3237"/>
+        <location filename="main.py" line="3245"/>
         <source>By Status</source>
         <translation>بر اساس وضعیت</translation>
     </message>
     <message>
-        <location filename="main.py" line="3240"/>
+        <location filename="main.py" line="3248"/>
         <source>Downloading</source>
         <translation>در حال دانلود</translation>
     </message>
     <message>
-        <location filename="main.py" line="3240"/>
-        <location filename="main.py" line="3605"/>
+        <location filename="main.py" line="3248"/>
+        <location filename="main.py" line="3613"/>
         <source>Queued</source>
         <translation>صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3241"/>
-        <location filename="main.py" line="3597"/>
-        <location filename="main.py" line="3879"/>
-        <location filename="main.py" line="3897"/>
+        <location filename="main.py" line="3249"/>
+        <location filename="main.py" line="3605"/>
+        <location filename="main.py" line="3887"/>
+        <location filename="main.py" line="3905"/>
         <source>Paused</source>
         <translation>متوقف شده</translation>
     </message>
     <message>
-        <location filename="main.py" line="3241"/>
+        <location filename="main.py" line="3249"/>
         <source>Finished</source>
         <translation>تمام شده</translation>
     </message>
     <message>
-        <location filename="main.py" line="3242"/>
+        <location filename="main.py" line="3250"/>
         <source>Error/Incomplete</source>
         <translation>خطا/ناقص</translation>
     </message>
     <message>
-        <location filename="main.py" line="3242"/>
-        <location filename="main.py" line="3307"/>
-        <location filename="main.py" line="3692"/>
+        <location filename="main.py" line="3250"/>
+        <location filename="main.py" line="3315"/>
+        <location filename="main.py" line="3700"/>
         <source>Streaming</source>
         <translation>در حال استریم</translation>
     </message>
     <message>
-        <location filename="main.py" line="3250"/>
+        <location filename="main.py" line="3258"/>
         <source>By Category</source>
         <translation>بر اساس دسته بندی</translation>
     </message>
     <message>
-        <location filename="main.py" line="3257"/>
+        <location filename="main.py" line="3265"/>
         <source>Queues</source>
         <translation>صف ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="3279"/>
+        <location filename="main.py" line="3287"/>
         <source>Restart Required</source>
         <translation>راه اندازی مجدد مورد نیاز است</translation>
     </message>
     <message>
-        <location filename="main.py" line="3280"/>
+        <location filename="main.py" line="3288"/>
         <source>Language change will take effect after restart. Restart now?</source>
         <translation>تغییر زبان پس از راه‌اندازی مجدد اعمال خواهد شد. اکنون راه‌اندازی مجدد شود؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3326"/>
-        <location filename="main.py" line="3333"/>
+        <location filename="main.py" line="3334"/>
+        <location filename="main.py" line="3341"/>
         <source>Downloading...</source>
         <translation>در حال دانلود...</translation>
     </message>
     <message>
-        <location filename="main.py" line="3329"/>
-        <location filename="main.py" line="3608"/>
+        <location filename="main.py" line="3337"/>
+        <location filename="main.py" line="3616"/>
         <source>Streaming...</source>
         <translation>درحال استریم...</translation>
     </message>
     <message>
-        <location filename="main.py" line="3337"/>
-        <location filename="main.py" line="3352"/>
+        <location filename="main.py" line="3345"/>
+        <location filename="main.py" line="3360"/>
         <source>N/A</source>
         <translation>نامعلوم</translation>
     </message>
     <message>
-        <location filename="main.py" line="3601"/>
-        <location filename="main.py" line="4140"/>
-        <location filename="main.py" line="4207"/>
-        <location filename="main.py" line="4346"/>
-        <location filename="main.py" line="4355"/>
+        <location filename="main.py" line="3609"/>
+        <location filename="main.py" line="4148"/>
+        <location filename="main.py" line="4215"/>
+        <location filename="main.py" line="4354"/>
+        <location filename="main.py" line="4363"/>
         <source>Error</source>
         <translation>خطا</translation>
     </message>
     <message>
-        <location filename="main.py" line="3641"/>
+        <location filename="main.py" line="3649"/>
         <source>Connecting...</source>
         <translation>در حال اتصال...</translation>
     </message>
     <message>
-        <location filename="main.py" line="3661"/>
+        <location filename="main.py" line="3669"/>
         <source>Browser Integration Failed</source>
         <translation>ادغام مرورگر ناموفق بود</translation>
     </message>
     <message>
-        <location filename="main.py" line="3668"/>
+        <location filename="main.py" line="3676"/>
         <source>PIDM could not start the listener required for browser integration. This usually means another application (or another instance of PIDM) is using the required ports.
 
 You can still use the application to add downloads manually.</source>
@@ -628,70 +638,70 @@ You can still use the application to add downloads manually.</source>
 شما همچنان می‌توانید از برنامه برای اضافه کردن دستی دانلودها استفاده کنید.</translation>
     </message>
     <message>
-        <location filename="main.py" line="3674"/>
+        <location filename="main.py" line="3682"/>
         <source>Update Available</source>
         <translation>به‌روزرسانی موجود است</translation>
     </message>
     <message>
-        <location filename="main.py" line="3675"/>
+        <location filename="main.py" line="3683"/>
         <source>A new version {new_version} is available!
 Would you like to open the release page?</source>
         <translation>نسخه جدید {new_version} منتشر شد!
 آیا مایلید صفحه انتشار را باز کنید؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3724"/>
+        <location filename="main.py" line="3732"/>
         <source>Download Complete</source>
         <translation>دانلود کامل</translation>
     </message>
     <message>
-        <location filename="main.py" line="3725"/>
+        <location filename="main.py" line="3733"/>
         <source>File &apos;{Path(save_path_str).name}&apos; downloaded successfully.</source>
         <translation>فایل &apos;{Path(save_path_str).name}&apos; با موفقیت دانلود شد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="3786"/>
-        <location filename="main.py" line="3793"/>
+        <location filename="main.py" line="3794"/>
+        <location filename="main.py" line="3801"/>
         <source>Cannot Resume</source>
         <translation>نمی‌توان ادامه داد</translation>
     </message>
     <message>
-        <location filename="main.py" line="3787"/>
+        <location filename="main.py" line="3795"/>
         <source>Download is currently active or cannot be resumed.</source>
         <translation>دانلود در حال حاضر فعال است یا نمی‌توان آن را از سر گرفت.</translation>
     </message>
     <message>
-        <location filename="main.py" line="3794"/>
+        <location filename="main.py" line="3802"/>
         <source>Download is in status &apos;{dl_data[&apos;status&apos;]}&apos; and cannot be resumed.</source>
         <translation>دانلود در وضعیت &apos;{dl_data[&apos;status&apos;]}&apos; است و قابل ادامه نیست.</translation>
     </message>
     <message>
-        <location filename="main.py" line="3808"/>
+        <location filename="main.py" line="3816"/>
         <source>Confirm Redownload</source>
         <translation>دانلود مجدد را تأیید کنید</translation>
     </message>
     <message>
-        <location filename="main.py" line="3810"/>
+        <location filename="main.py" line="3818"/>
         <source>This will delete the existing partial file and restart the download from the beginning. Are you sure?</source>
         <translation>این کار فایل ناقص موجود را حذف می‌کند و دانلود را از ابتدا آغاز می‌کند. مطمئن هستید؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3822"/>
+        <location filename="main.py" line="3830"/>
         <source>File Error</source>
         <translation>خطای فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="3823"/>
+        <location filename="main.py" line="3831"/>
         <source>Could not delete the partial file. Please check permissions.</source>
         <translation>فایل ناقص حذف نشد. لطفاً مجوزها را بررسی کنید.</translation>
     </message>
     <message>
-        <location filename="main.py" line="3843"/>
+        <location filename="main.py" line="3851"/>
         <source>Pause Stream Download</source>
         <translation>توقف دانلود استریم</translation>
     </message>
     <message>
-        <location filename="main.py" line="3846"/>
+        <location filename="main.py" line="3854"/>
         <source>Pausing will interrupt the download, and progress may be lost. Resuming will restart it from the beginning.
 
 Are you sure you want to pause?</source>
@@ -700,300 +710,300 @@ Are you sure you want to pause?</source>
 آیا از این کار مطمئن هستید؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3906"/>
+        <location filename="main.py" line="3914"/>
         <source>Cancel Download</source>
         <translation>لغو دانلود</translation>
     </message>
     <message>
-        <location filename="main.py" line="3907"/>
+        <location filename="main.py" line="3915"/>
         <source>Cancel download ID {dl_id} and delete partial file?</source>
         <translation>دانلود با شناسه {dl_id} به همراه فایل ناقص حذف شود؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3934"/>
+        <location filename="main.py" line="3942"/>
         <source>Confirm Removal</source>
         <translation>تأیید حذف</translation>
     </message>
     <message>
-        <location filename="main.py" line="3935"/>
+        <location filename="main.py" line="3943"/>
         <source>What would you like to do with &apos;{dl_data[&apos;file_name&apos;]}&apos;?</source>
         <translation>می‌خواهید با &apos;{dl_data[&apos;file_name&apos;]}&apos; چه کاری انجام دهید؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="3937"/>
+        <location filename="main.py" line="3945"/>
         <source>Delete from Disk</source>
         <translation>حذف از حافظه</translation>
     </message>
     <message>
-        <location filename="main.py" line="3938"/>
+        <location filename="main.py" line="3946"/>
         <source>Remove from List Only</source>
         <translation>فقط حذف از لیست</translation>
     </message>
     <message>
-        <location filename="main.py" line="3939"/>
+        <location filename="main.py" line="3947"/>
         <source>Cancel</source>
         <translation>لغو</translation>
     </message>
     <message>
-        <location filename="main.py" line="3999"/>
+        <location filename="main.py" line="4007"/>
         <source>File Deletion Error</source>
         <translation>خطای حذف فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="4000"/>
+        <location filename="main.py" line="4008"/>
         <source>Could not delete file: {e.filename}
 Error: {e.strerror}</source>
         <translation>نتوانستم فایل را حذف کنیم: {e.filename}
 خطا: {e.strerror}</translation>
     </message>
     <message>
-        <location filename="main.py" line="4024"/>
+        <location filename="main.py" line="4032"/>
         <source>Add New Queue...</source>
         <translation>اضافه کردن صف جدید...</translation>
     </message>
     <message>
-        <location filename="main.py" line="4039"/>
+        <location filename="main.py" line="4047"/>
         <source>Start This Queue</source>
         <translation>شروع این صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4042"/>
+        <location filename="main.py" line="4050"/>
         <source>Stop This Queue</source>
         <translation>توقف این صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4045"/>
+        <location filename="main.py" line="4053"/>
         <source>Edit Queue Settings...</source>
         <translation>ویرایش تنظیمات صف ...</translation>
     </message>
     <message>
-        <location filename="main.py" line="4051"/>
+        <location filename="main.py" line="4059"/>
         <source>Delete This Queue</source>
         <translation>حذف این صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4059"/>
+        <location filename="main.py" line="4067"/>
         <source>Add New Queue</source>
         <translation>اضافه کردن صف جدید</translation>
     </message>
     <message>
-        <location filename="main.py" line="4059"/>
+        <location filename="main.py" line="4067"/>
         <source>Enter name for the new queue:</source>
         <translation>نام صف جدید را وارد کنید:</translation>
     </message>
     <message>
-        <location filename="main.py" line="4063"/>
+        <location filename="main.py" line="4071"/>
         <source>Queue Exists</source>
         <translation>صف وجود دارد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4064"/>
+        <location filename="main.py" line="4072"/>
         <source>A queue named &apos;{new_queue_name}&apos; already exists.</source>
         <translation>صفی با نام &apos;{new_queue_name}&apos; از قبل وجود دارد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4134"/>
+        <location filename="main.py" line="4142"/>
         <source>Queue Updated</source>
         <translation>صف به‌روزرسانی شد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4135"/>
+        <location filename="main.py" line="4143"/>
         <source>Queue &apos;{settings_data[&apos;name&apos;]}&apos; settings saved.</source>
         <translation>تنظیمات &apos;{settings_data[&apos;name&apos;]}&apos; در صف ذخیره شدند.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4140"/>
+        <location filename="main.py" line="4148"/>
         <source>Queue not found.</source>
         <translation>صف پیدا نشد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4145"/>
+        <location filename="main.py" line="4153"/>
         <source>Cannot Delete</source>
         <translation>حذف نمی‌شود</translation>
     </message>
     <message>
-        <location filename="main.py" line="4145"/>
+        <location filename="main.py" line="4153"/>
         <source>The &apos;Main Queue&apos; cannot be deleted.</source>
         <translation>«صف اصلی» قابل حذف نیست.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4149"/>
+        <location filename="main.py" line="4157"/>
         <source>Delete Queue</source>
         <translation>حذف صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4151"/>
+        <location filename="main.py" line="4159"/>
         <source>Are you sure you want to delete the queue &apos;{queue_to_delete[&apos;name&apos;]}&apos;?
 Downloads in this queue will NOT be deleted but will be unassigned from any queue.</source>
         <translation>آیا مطمئن هستید که می‌خواهید صف &apos;{queue_to_delete[&apos;name&apos;]}&apos; را حذف کنید؟
 دانلودهای این صف حذف نمی‌شوند، و به صف دیگری منتقل نمی شوند.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4207"/>
+        <location filename="main.py" line="4215"/>
         <source>A valid URL is required.</source>
         <translation>یک لینک معتبر مورد نیاز است.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4253"/>
+        <location filename="main.py" line="4261"/>
         <source>Retry/Start Stream</source>
         <translation>تلاش مجدد/ شروع استریم</translation>
     </message>
     <message>
-        <location filename="main.py" line="4263"/>
+        <location filename="main.py" line="4271"/>
         <source>Redownload</source>
         <translation>دانلود مجدد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4278"/>
+        <location filename="main.py" line="4286"/>
         <source>Assign to Queue</source>
         <translation>اختصاص به صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4280"/>
+        <location filename="main.py" line="4288"/>
         <source>(No Queue - Download Immediately)</source>
         <translation>(بدون صف - دانلود فوری)</translation>
     </message>
     <message>
-        <location filename="main.py" line="4295"/>
+        <location filename="main.py" line="4303"/>
         <source>Open File</source>
         <translation>باز کردن فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="4297"/>
+        <location filename="main.py" line="4305"/>
         <source>Open Containing Folder</source>
         <translation>باز کردن پوشه حاوی فایل</translation>
     </message>
     <message>
-        <location filename="main.py" line="4300"/>
+        <location filename="main.py" line="4308"/>
         <source>Properties...</source>
         <translation>ویژگی ها...</translation>
     </message>
     <message>
-        <location filename="main.py" line="4330"/>
+        <location filename="main.py" line="4338"/>
         <source>File Not Found</source>
         <translation>فایل یافت نشد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4331"/>
+        <location filename="main.py" line="4339"/>
         <source>The downloaded file could not be found at the specified path.</source>
         <translation>فایل دانلود شده در مسیر مشخص شده یافت نشد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4343"/>
+        <location filename="main.py" line="4351"/>
         <source>Folder Not Found</source>
         <translation>پوشه پیدا نشد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4344"/>
+        <location filename="main.py" line="4352"/>
         <source>The containing folder could not be found.</source>
         <translation>پوشه حاوی فایل پیدا نشد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4346"/>
+        <location filename="main.py" line="4354"/>
         <source>Download data not found.</source>
         <translation>دانلود دیتا پیدا نشد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4355"/>
+        <location filename="main.py" line="4363"/>
         <source>Could not load download properties.</source>
         <translation>ویژگی های دانلود لود نمی شوند.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4372"/>
+        <location filename="main.py" line="4380"/>
         <source>Theme Not Found</source>
         <translation>قالب پیدا نشد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4373"/>
+        <location filename="main.py" line="4381"/>
         <source>The theme file &apos;{theme_name}.qss&apos; was not found.</source>
         <translation>فایل قالب &apos;{theme_name}.qss&apos; یافت نشد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4382"/>
+        <location filename="main.py" line="4390"/>
         <source>Error Loading Theme</source>
         <translation>خطا در بارگیری قالب</translation>
     </message>
     <message>
-        <location filename="main.py" line="4383"/>
+        <location filename="main.py" line="4391"/>
         <source>Failed to apply theme &apos;{theme_name}&apos;: {e}</source>
         <translation>اعمال قالب &apos;{theme_name}&apos;: {e} ناموفق بود</translation>
     </message>
     <message>
-        <location filename="main.py" line="4417"/>
+        <location filename="main.py" line="4426"/>
         <source>Options</source>
         <translation>گزینه‌ها</translation>
     </message>
     <message>
-        <location filename="main.py" line="4417"/>
+        <location filename="main.py" line="4426"/>
         <source>Options dialog is not yet implemented.</source>
         <translation>کادر محاوره‌ای گزینه‌ها هنوز پیاده‌سازی نشده است.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4424"/>
+        <location filename="main.py" line="4433"/>
         <source>Global Speed Limit</source>
         <translation>محدودیت سرعت کلی</translation>
     </message>
     <message>
-        <location filename="main.py" line="4425"/>
+        <location filename="main.py" line="4434"/>
         <source>Set global download speed limit (KB/s):
 (0 or empty to disable)</source>
         <translation>تنظیم محدودیت سرعت دانلود (کیلوبایت بر ثانیه):
 (0 یا خالی برای غیرفعال کردن)</translation>
     </message>
     <message>
-        <location filename="main.py" line="4431"/>
+        <location filename="main.py" line="4440"/>
         <source>Global speed limit disabled.</source>
         <translation>محدودیت سرعت کلی غیرفعال شد.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4433"/>
+        <location filename="main.py" line="4442"/>
         <source>Global speed limit set to {limit_kbps} KB/s.</source>
         <translation>محدودیت سرعت سراسری روی {limit_kbps} کیلوبایت بر ثانیه تنظیم شده است.</translation>
     </message>
     <message>
-        <location filename="main.py" line="4433"/>
+        <location filename="main.py" line="4442"/>
         <source>Speed Limit Updated</source>
         <translation>محدودیت سرعت به‌روزرسانی شد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4437"/>
+        <location filename="main.py" line="4446"/>
         <source>About PIDM</source>
         <translation>درباره PIDM</translation>
     </message>
     <message>
-        <location filename="main.py" line="4454"/>
-        <source>&lt;h3&gt;Python Internet Download Manager (PIDM)&lt;/h3&gt;&lt;p&gt;&lt;b&gt;Version:&lt;/b&gt; {self.app_version}&lt;/p&gt;&lt;p&gt;PIDM is an open-source, Python-based download manager.&lt;/p&gt;&lt;p&gt;It supports features like:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Queue-based download management&lt;/li&gt;&lt;li&gt;Multi-language support&lt;/li&gt;&lt;li&gt;Scheduling &amp; speed limiting&lt;/li&gt;&lt;li&gt;Pause/resume &amp; persistent downloads&lt;/li&gt;&lt;/ul&gt;</source>
-        <translation>&lt;h3&gt;مدیریت دانلود اینترنت پایتون (PIDM)&lt;/h3&gt;&lt;p&gt;&lt;b&gt;نسخه:&lt;/b&gt; {self.app_version}&lt;/p&gt;&lt;p&gt;PIDM یک مدیر دانلود متن‌باز مبتنی بر پایتون است.&lt;/p&gt;&lt;p&gt;این برنامه از ویژگی‌هایی مانند موارد زیر پشتیبانی می‌کند:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;مدیریت دانلود مبتنی بر صف&lt;/li&gt;&lt;li&gt;پشتیبانی از چند زبان&lt;/li&gt;&lt;li&gt;زمان‌بندی و محدود کردن سرعت&lt;/li&gt;&lt;li&gt;مکث/از سرگیری و دانلودهای مداوم&lt;/li&gt;&lt;/ul&gt;</translation>
+        <location filename="main.py" line="4463"/>
+        <source>&lt;h2 align=&apos;center&apos;&gt;Python Internet Download Manager (PIDM)&lt;/h2&gt;&lt;p align=&apos;center&apos;&gt;&lt;b&gt;Version:&lt;/b&gt; {self.app_version}&lt;/p&gt;&lt;p&gt;PIDM is a modern, open-source internet download manager built with Python and PySide6.&lt;/p&gt;&lt;p&gt;It features a smart and theme-aware interface, supports stream downloads, browser integration, scheduling, multilingual UI, speed limits, and more.&lt;/p&gt;&lt;p align=&apos;center&apos;&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM&apos;&gt;GitHub Repository&lt;/a&gt;&lt;br&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM-ext&apos;&gt;Browser Extension&lt;/a&gt;&lt;br&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM/releases&apos;&gt;Latest Releases&lt;/a&gt;&lt;/p&gt;</source>
+        <translation>&lt;h2 align=&apos;center&apos;&gt;مدیر دانلود اینترنتی پایتون (PIDM)&lt;/h2&gt;&lt;p align=&apos;center&apos;&gt;&lt;b&gt;نسخه:&lt;/b&gt; {self.app_version}&lt;/p&gt;&lt;p&gt;PIDM یک مدیر دانلود اینترنتی مدرن و متن‌باز است که با پایتون و PySide6 ساخته شده است.&lt;/p&gt;&lt;p&gt;این برنامه دارای رابط کاربری هوشمند و آگاه از تم است، از دانلودهای استریم، ادغام مرورگر، زمان‌بندی، رابط کاربری چندزبانه، محدودیت‌های سرعت و موارد دیگر پشتیبانی می‌کند.&lt;/p&gt;&lt;p align=&apos;center&apos;&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM&apos;&gt;مخزن گیت‌هاب&lt;/a&gt;&lt;br&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM-ext&apos;&gt;افزونه مرورگر&lt;/a&gt;&lt;br&gt;🔗 &lt;a href=&apos;https://github.com/saeedmasoudie/PIDM/releases&apos;&gt;آخرین انتشارات&lt;/a&gt;&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="main.py" line="4461"/>
+        <location filename="main.py" line="4472"/>
         <source>&lt;hr&gt;&lt;p align=&apos;center&apos;&gt;Created with ❤️ by &lt;a href=&apos;https://saeedmasoudie.ir&apos;&gt;Saeed Masoudi&lt;/a&gt;&lt;/p&gt;</source>
         <translation>&lt;hr&gt;&lt;p align=&apos;center&apos;&gt;طراحی شده با ❤️ توسط &lt;a href=&apos;https://saeedmasoudie.ir&apos;&gt;سعید مسعودی&lt;/a&gt;&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="main.py" line="4468"/>
+        <location filename="main.py" line="4479"/>
         <source>Check for Updates</source>
         <translation>بررسی برای به‌روزرسانی‌</translation>
     </message>
     <message>
-        <location filename="main.py" line="4489"/>
+        <location filename="main.py" line="4500"/>
         <source>Exit Confirmation</source>
         <translation>تأیید خروج</translation>
     </message>
     <message>
-        <location filename="main.py" line="4490"/>
+        <location filename="main.py" line="4501"/>
         <source>Active downloads will be paused. Are you sure you want to exit?</source>
         <translation>دانلودهای فعال متوقف خواهند شد. آیا مطمئنید که می‌خواهید خارج شوید؟</translation>
     </message>
     <message>
-        <location filename="main.py" line="4527"/>
+        <location filename="main.py" line="4538"/>
         <source>PIDM Still Running</source>
         <translation>PIDM هنوز در حال اجرا است</translation>
     </message>
     <message>
-        <location filename="main.py" line="4528"/>
+        <location filename="main.py" line="4539"/>
         <source>PIDM is still running in the system tray.</source>
-        <translation>برنامه هنوز در لیست برنامه ها قابل دسترس است</translation>
+        <translation>برنامه هنوز در لیست برنامه ها قابل دسترس است.</translation>
     </message>
 </context>
 <context>
@@ -1311,54 +1321,54 @@ Downloads in this queue will NOT be deleted but will be unassigned from any queu
 <context>
     <name>Status</name>
     <message>
-        <location filename="main.py" line="4536"/>
+        <location filename="main.py" line="4547"/>
         <source>Queued</source>
         <translation>صف</translation>
     </message>
     <message>
-        <location filename="main.py" line="4537"/>
+        <location filename="main.py" line="4548"/>
         <source>Downloading</source>
         <translation>در حال دانلود</translation>
     </message>
     <message>
-        <location filename="main.py" line="4538"/>
+        <location filename="main.py" line="4549"/>
         <source>Paused</source>
         <translation>متوقف شده</translation>
     </message>
     <message>
-        <location filename="main.py" line="4539"/>
+        <location filename="main.py" line="4550"/>
         <source>Cancelled</source>
         <translation>لغو شد</translation>
     </message>
     <message>
-        <location filename="main.py" line="4540"/>
+        <location filename="main.py" line="4551"/>
         <source>Complete</source>
         <translation>کامل</translation>
     </message>
     <message>
-        <location filename="main.py" line="4541"/>
+        <location filename="main.py" line="4552"/>
         <source>Error</source>
         <translation>خطا</translation>
     </message>
     <message>
-        <location filename="main.py" line="4542"/>
+        <location filename="main.py" line="4553"/>
         <source>Connecting</source>
         <translation>در حال اتصال</translation>
     </message>
     <message>
-        <location filename="main.py" line="4543"/>
+        <location filename="main.py" line="4554"/>
         <source>Resuming</source>
         <translation>از سر گرفتن</translation>
     </message>
     <message>
-        <location filename="main.py" line="4544"/>
+        <location filename="main.py" line="4555"/>
         <source>Incomplete</source>
         <translation>ناقص</translation>
     </message>
     <message>
-        <location filename="main.py" line="4547"/>
+        <location filename="main.py" line="4558"/>
         <source>Streaming</source>
-        <translation>درحال استریم</translation>
+        <translation>در حال استریم</translation>
     </message>
 </context>
 <context>

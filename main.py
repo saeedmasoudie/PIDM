@@ -1585,7 +1585,7 @@ class MetadataFetcher(QThread):
 
 
 class UpdateCheckThread(QThread):
-    update_available = Signal(str, str)  # version, url
+    update_available = Signal(str, str)
 
     def __init__(self, current_version: str, parent=None):
         super().__init__(parent)
@@ -2957,13 +2957,14 @@ class QueueSettingsDialog(QDialog):
 class PIDM(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(self.tr("Python Internet Download Manager (PIDM)"))
-        self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
-        self.resize(900, 550)
-        self.app_version = "1.1.2"
+        self.app_version = "1.2.0"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
         self.is_quitting = False
+
+        self.setWindowTitle(self.tr(f"Python Internet Download Manager {self.app_version}"))
+        self.setWindowIcon(QIcon(get_asset_path("assets/icons/pidm_icon.ico")))
+        self.resize(900, 550)
 
         if not self.db.get_queue_by_name("Main Queue"):
             self.db.add_queue("Main Queue", enabled=1, max_concurrent=self.settings.get("default_max_concurrent", 3))
@@ -3049,7 +3050,14 @@ class PIDM(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl("https://github.com/saeedmasoudie/PIDM/issues"))
         )
         self.report_bug_action.setToolTip(self.tr("Report a bug or suggest a feature"))
+
+        self.donate_action = QAction(self.tr("Donate"), self)
+        self.donate_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://www.saeedmasoudie.ir/donate.html"))
+        )
+        self.donate_action.setToolTip(self.tr("Support the project by a simple donate"))
         toolbar.addAction(self.report_bug_action)
+        toolbar.addAction(self.donate_action)
 
         self.init_menubar()
 
@@ -4412,6 +4420,7 @@ class PIDM(QMainWindow):
         self.stop_all_action.setIcon(
             icon(get_asset_path("assets/icons/hand-stop.svg"), self.stop_all_action.isEnabled()))
         self.report_bug_action.setIcon(icon(get_asset_path("assets/icons/bug.svg"), self.report_bug_action.isEnabled()))
+        self.donate_action.setIcon(icon(get_asset_path("assets/icons/donate.svg"), self.donate_action.isEnabled()))
 
     def show_options_dialog(self):
         QMessageBox.information(self, self.tr("Options"), self.tr("Options dialog is not yet implemented."))
@@ -4435,26 +4444,28 @@ class PIDM(QMainWindow):
     def show_about_dialog(self):
         about_dialog = QDialog(self)
         about_dialog.setWindowTitle(self.tr("About PIDM"))
-        about_dialog.setMinimumWidth(420)
+        about_dialog.setMinimumWidth(460)
 
         layout = QVBoxLayout(about_dialog)
 
         # Description
         description = QLabel(self.tr(
-            f"<h3>Python Internet Download Manager (PIDM)</h3>"
-            f"<p><b>Version:</b> {self.app_version}</p>"
-            "<p>PIDM is an open-source, Python-based download manager.</p>"
-            "<p>It supports features like:</p>"
-            "<ul>"
-            "<li>Queue-based download management</li>"
-            "<li>Multi-language support</li>"
-            "<li>Scheduling & speed limiting</li>"
-            "<li>Pause/resume & persistent downloads</li>"
-            "</ul>"
+            f"<h2 align='center'>Python Internet Download Manager (PIDM)</h2>"
+            f"<p align='center'><b>Version:</b> {self.app_version}</p>"
+            "<p>PIDM is a modern, open-source internet download manager built with Python and PySide6.</p>"
+            "<p>It features a smart and theme-aware interface, supports stream downloads, "
+            "browser integration, scheduling, multilingual UI, speed limits, and more.</p>"
+            "<p align='center'>"
+            "🔗 <a href='https://github.com/saeedmasoudie/PIDM'>GitHub Repository</a><br>"
+            "🔗 <a href='https://github.com/saeedmasoudie/PIDM-ext'>Browser Extension</a><br>"
+            "🔗 <a href='https://github.com/saeedmasoudie/PIDM/releases'>Latest Releases</a>"
+            "</p>"
         ))
         description.setWordWrap(True)
+        description.setOpenExternalLinks(True)
         layout.addWidget(description)
 
+        # Footer
         footer = QLabel(self.tr(
             "<hr><p align='center'>Created with ❤️ by "
             "<a href='https://saeedmasoudie.ir'>Saeed Masoudi</a></p>"
