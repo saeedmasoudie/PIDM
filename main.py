@@ -2957,7 +2957,7 @@ class QueueSettingsDialog(QDialog):
 class PIDM(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.app_version = "1.1.2"
+        self.app_version = "1.2.0"
         self.settings = SettingsManager()
         self.db = DatabaseManager()
         self.is_quitting = False
