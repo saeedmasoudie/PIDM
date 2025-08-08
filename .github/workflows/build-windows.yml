@@ -45,8 +45,6 @@ jobs:
             --enable-plugin=pyside6 ^
             --include-qt-plugins=imageformats,platforms,styles ^
             --nofollow-import-to=tkinter,test,pydoc ^
-            --nofollow-import-to=yt_dlp.extractor.lazy_extractors ^
-            --nofollow-import-to=yt_dlp.extractor.packtpub ^
             --include-data-dir=assets=assets ^
             --include-data-dir=translations=translations ^
             --include-data-dir=bin=bin ^
@@ -58,7 +56,8 @@ jobs:
             --windows-product-version=1.2.0 ^
             --assume-yes-for-downloads ^
             --jobs=%NUMBER_OF_PROCESSORS% ^
-            --lto=yes
+            --jobs=2 ^
+            --lto=no
 
       - name: ✅ Verify Executable Exists
         shell: cmd
