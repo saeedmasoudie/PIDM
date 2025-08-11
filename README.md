@@ -21,6 +21,15 @@
 
 ---
 
+## 💖 Support the Project
+
+If you enjoy my work and want to support future development, you can donate here:
+
+👉 [Donate via my official website](https://www.saeedmasoudie.ir/donate.html)
+
+Every contribution helps keep the project alive. Thank you!
+
+---
 ## 📷 Screenshots
 
 ![Main Window](screenshots/Screenshot-1.png)
