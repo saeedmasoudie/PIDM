@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import platform
 from pathlib import Path
+from typing import cast
 
 from platformdirs import user_data_path
 from PySide6.QtCore import QUrl
@@ -85,7 +86,8 @@ def main() -> int:
     apply_language_font()
     i18n.languageChanged.connect(apply_language_font)
 
-    qmlRegisterSingletonInstance(I18n, "PIDM", 1, 0, "I18n", i18n)
+    qml_name = cast(bytes, "I18n")
+    qmlRegisterSingletonInstance(I18n, "PIDM", 1, 0, qml_name, i18n)
     engine = QQmlApplicationEngine()
     context = engine.rootContext()
     database = DownloadDatabase(Path(user_data_path("PIDM", "PIDM")) / "downloads-v2.db")

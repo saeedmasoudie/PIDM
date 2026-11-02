@@ -7,7 +7,8 @@ and optional browser integration.
 
 ## Download
 
-You can always grab the latest version of the app from the **[GitHub Releases](../../releases/latest)** page.  
+You can always grab the latest version of the app from the
+**[GitHub Releases](../../releases/latest)** page.
 Choose the package that matches your operating system:
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows-blue?logo=windows)](../../releases/latest)
@@ -53,7 +54,7 @@ Python 3.11 through 3.13 is recommended. Torrent support depends on
 ### Windows
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/saeedmasoudie/PIDM.git
 cd PIDM
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -65,7 +66,7 @@ python main.py
 ### Linux and macOS
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/saeedmasoudie/PIDM.git
 cd PIDM
 python3 -m venv .venv
 source .venv/bin/activate
@@ -109,12 +110,10 @@ python scripts/write_build_info.py
 python -m PyInstaller --clean --noconfirm pidm.spec
 ```
 
-The application bundle is written to `dist/`. If `assets/logo.png` is absent,
-copy `extension/logo.png` there before packaging. The project intentionally
-supports a generated fallback icon when running from source; see
-[assets/README.md](assets/README.md) for production-logo guidance.
+The application bundle is written to `dist/`. The checked-in production logo
+is used for the desktop application and packaged browser extensions.
 
-Pushing a tag whose name starts with `v`, such as `v1.0.0`, runs the
+Pushing a tag whose name starts with `v`, such as `v2.0.0`, runs the
 [build workflow](.github/workflows/build.yml). It builds desktop artifacts and
 browser extension archives, then attaches them to the matching GitHub release.
 The workflow can also be started manually.
@@ -129,7 +128,6 @@ python -m compileall -q .
 node --check extension/background.js
 node --check extension/content.js
 node --check extension/popup.js
-node --check extension/shared.js
 python extension/package.py --output /tmp/pidm-extensions
 ```
 

@@ -20,9 +20,14 @@ class UpdateChecker(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._settings = QSettings()
-        self._repository = (
+        repository = (
             os.environ.get("PIDM_GITHUB_REPOSITORY", "").strip()
             or GITHUB_REPOSITORY
+        )
+        self._repository = (
+            repository.removeprefix("https://github.com/")
+            .removeprefix("http://github.com/")
+            .strip("/")
         )
         self._checking = False
         self._checkCompleted.connect(self._finish_check)
