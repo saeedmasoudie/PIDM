@@ -1,136 +1,162 @@
-# PIDM - Python Internet Download Manager
+# PIDM
 
-<img src="screenshots/pidm.png" alt="PIDM logo" width="128" height="128">
+PIDM is a cross-platform desktop download manager built with Python, PySide6,
+and Qt Quick. It combines a native queue-based interface with resumable
+downloads, segmented transfers, media extraction, torrent support, scheduling,
+and optional browser integration.
 
-**PIDM** is a modern, open-source internet download manager written in Python and powered by PySide6 (Qt). It features full support for stream and file downloads, Chrome extension integration, smart UI features, and multi-language support — all in a beautiful, theme-aware desktop application.
+## Highlights
 
----
+- Pause, resume, retry, and recover HTTP and HTTPS downloads
+- Use parallel byte-range connections when the remote server supports them
+- Organize transfers into queues with schedules, concurrency limits, and
+  post-completion actions
+- Download torrents and magnet links with per-file selection
+- Resolve downloadable media and formats with yt-dlp
+- Try HTTP/3 for compatible HTTPS origins, with automatic fallback
+- Apply speed limits, connection limits, proxy settings, network-interface
+  selection, custom request headers, and checksum verification
+- Monitor the clipboard and control PIDM from the system tray
+- Choose light, dark, or system themes
+- Use the interface in English, Persian, Russian, or Chinese
+- Send links and detected media from Chromium-based browsers or Firefox
 
-## 🔥 Key Features
+## Supported platforms
 
-- 🎞️ **Stream downloads** from YouTube, Twitch, Netflix, and more (via `yt_dlp`)
-- 📥 **File downloads** with multithreading and parallel chunking (`httpx`)
-- 🧩 **Browser extension** for Chrome-based browsers (via [PIDM-ext](https://github.com/saeedmasoudie/PIDM-ext))
-- 🗂️ **Queue system** with concurrent downloads and scheduling
-- 🌈 **Theme-aware UI** (automatic light/dark mode)
-- 🌐 **Multi-language support** (English, فارسی, ...)
-- 💻 **Lightweight and fast** standalone Windows build via Nuitka
-- 🔐 **Login/auth support**, global and per-download speed limits
-- 💽 **SQLite-based session persistence** (downloads remembered between launches)
-- 🌍 **Proxy communication support** for external triggers
+PIDM is developed for Windows, Linux, and macOS. GitHub Actions builds
+PyInstaller packages for all three platforms.
 
----
+Python 3.11 through 3.13 is recommended. Torrent support depends on
+`libtorrent`, whose available wheels may vary by Python version and platform.
 
-## 💖 Support the Project
+## Install from source
 
-If you enjoy my work and want to support future development, you can donate here:
+### Prerequisites
 
-👉 [Donate via my official website](https://www.saeedmasoudie.ir/donate.html)
+- Python 3.11–3.13
+- Git
+- A Python virtual environment
 
-Every contribution helps keep the project alive. Thank you!
+### Windows
 
----
-## 📷 Screenshots
+```powershell
+git clone <repository-url>
+cd PIDM
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python main.py
+```
 
-![Main Window](screenshots/Screenshot-1.png)
-![New Download Dialog](screenshots/Screenshot-2.png)
+### Linux and macOS
 
----
+```bash
+git clone <repository-url>
+cd PIDM
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python main.py
+```
 
-## 🛠️ Installation
+On Linux, Qt may also require distribution packages for X11 or Wayland,
+OpenGL, audio, and the system tray. Install the packages appropriate for your
+desktop environment if Qt reports a missing platform plugin.
 
-### 🔽 Download for Windows
+## Browser extension
 
-Get the latest `.exe` from the [Releases](https://github.com/saeedmasoudie/PIDM/releases) page.
+PIDM includes a WebExtension for Chromium-based browsers and Firefox. The
+extension can send individual links, selected batches, media pages, and
+detected media to the desktop app.
 
-### 🧩 Install Browser Extension
+PIDM must be running because the extension communicates only with a local
+bridge at `127.0.0.1:17654`. No browsing data is sent to an external service.
 
-Source and updates available at [PIDM Extension Repository](https://github.com/saeedmasoudie/PIDM-ext)
+To create installable archives:
 
-### ⚙️ Run from Source (Linux/Mac/Dev)
+```bash
+python extension/package.py
+```
 
-1. Clone the repo:
-    ```bash
-    git clone https://github.com/saeedmasoudie/PIDM.git
-    cd PIDM
-    ```
+The command writes separate Chromium and Firefox ZIP files to
+`extension/dist/`. See [extension/README.md](extension/README.md) for unpacked
+development installation, browser compatibility, behavior, and privacy
+details.
 
-2. Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
+## Build a desktop package
 
-3. Run the app:
-    ```bash
-    python main.py
-    ```
+Install the build dependencies and run the checked-in PyInstaller
+specification:
 
----
+```bash
+python -m pip install -r requirements.txt pyinstaller pillow
+python scripts/write_build_info.py
+python -m PyInstaller --clean --noconfirm pidm.spec
+```
 
-## 📦 Requirements (for source version)
+The application bundle is written to `dist/`. If `assets/logo.png` is absent,
+copy `extension/logo.png` there before packaging. The project intentionally
+supports a generated fallback icon when running from source; see
+[assets/README.md](assets/README.md) for production-logo guidance.
 
-- Python 3.9+
-- [ffmpeg](https://ffmpeg.org/) (for stream muxing)
-- PySide6
-- httpx
-- yt_dlp
-- Others as listed in `requirements.txt`
+Pushing a tag whose name starts with `v`, such as `v1.0.0`, runs the
+[build workflow](.github/workflows/build.yml). It builds desktop artifacts and
+browser extension archives, then attaches them to the matching GitHub release.
+The workflow can also be started manually.
 
----
+## Development checks
 
-## 🌍 Translations
+This repository does not currently include an automated test suite. Before
+opening a pull request, run the available static and packaging checks:
 
-PIDM is available in multiple languages. You can help improve translations or add your own by editing `.ts` files in `assets/translations`.
+```bash
+python -m compileall -q .
+node --check extension/background.js
+node --check extension/content.js
+node --check extension/popup.js
+node --check extension/shared.js
+python extension/package.py --output /tmp/pidm-extensions
+```
 
----
+You can also exercise the desktop application directly with `python main.py`.
 
-## 🚧 Roadmap
+## Project layout
 
-**Completed:**
-- ✅ Stream downloads with format selection
-- ✅ Browser extension integration
-- ✅ Smart UI with metadata previews
-- ✅ Concurrent download queuing
-- ✅ Calendar-based scheduling for download start times
+```text
+.
+├── assets/          Fonts, sounds, and optional application branding
+├── controllers/     Qt-facing application services
+├── core/            HTTP, HTTP/3, torrent, and persistence primitives
+├── extension/       Chromium and Firefox WebExtension sources
+├── models/          Download and queue models
+├── qml/             Qt Quick interface
+├── scripts/         Build metadata tooling
+├── translations/    Application translations
+├── main.py           Application entry point
+└── pidm.spec         PyInstaller configuration
+```
 
-**Planned / In Progress:**
-- 🔁 Rework scheduling with more advanced rules and options
-- 🧲 Torrent support
-- 🌐 Network interface selection
+Download history is stored in `downloads-v2.db` inside the platform-specific
+PIDM user-data directory. Application preferences use the operating system's
+standard Qt settings location. Neither file is stored in the repository.
 
----
+## Contributing
 
-## 🤝 Credits
+Issues and focused pull requests are welcome. Please describe the operating
+system, Python version, source type, and reproduction steps when reporting a
+download problem. Keep changes scoped and run the development checks above
+before submitting code.
 
-PIDM uses the following open-source tools:
+## Responsible use
 
-- [`yt_dlp`](https://github.com/yt-dlp/yt-dlp) – for stream downloads
-- [`ffmpeg`](https://ffmpeg.org/) – for media processing
-- [`httpx`](https://www.python-httpx.org/) – for robust HTTP file downloads
-- [`PySide6`](https://doc.qt.io/qtforpython/) – Qt-based GUI toolkit
-- [`Nuitka`](https://nuitka.net/) – compiler for generating standalone builds
+Only download files and media that you are authorized to save. Users are
+responsible for complying with copyright law, website terms, and local
+regulations.
 
----
+## License
 
-## 🛡️ License
-
-MIT License © [Saeed Masoudi](https://github.com/saeedmasoudie)
-
----
-
-## ❤️ Contributing
-
-Pull requests and ideas are welcome!
-
-1. Fork the repo
-2. Create a branch: `git checkout -b feature/your-feature`
-3. Commit changes: `git commit -m "Add feature"`
-4. Push: `git push origin feature/your-feature`
-5. Open a pull request
-
----
-
-## 📫 Contact
-
-Have suggestions or questions?  
-Use [GitHub Issues](https://github.com/saeedmasoudie/PIDM/issues) or join the [Discussions](https://github.com/saeedmasoudie/PIDM/discussions).
+PIDM is released under the [MIT License](LICENSE). The bundled Vazirmatn font
+is distributed under the SIL Open Font License included in
+`assets/fonts/OFL.txt`.
