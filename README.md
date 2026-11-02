@@ -32,7 +32,7 @@ Choose the package that matches your operating system:
 
 ## Screenshots
 
-![PIDM Dark Mode](Screenshots/Screenshot.jpg)
+![PIDM Dark Mode](Screenshot/Screenshot.jpg)
 
 ## Supported platforms
 
