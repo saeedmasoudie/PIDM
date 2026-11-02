@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PIDM Download Capture</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>P</span>
+      <img id="brandLogo" src="logo.png" alt="">
+    </div>
+    <div>
+      <strong>PIDM Capture</strong>
+      <span id="pageTitle">Scanning this page…</span>
+    </div>
+  </header>
+
+  <div id="pidmWarning" class="connection-warning">
+    <strong>Open PIDM to use this extension</strong>
+    <span>The desktop app must be running before links or qualities can be sent.</span>
+  </div>
+
+  <div class="actions">
+    <button id="sendPage" type="button">Open media page</button>
+    <button id="refresh" class="secondary" type="button">Rescan</button>
+  </div>
+  <div id="pageHint" class="page-hint" hidden></div>
+  <div id="qualityPicker" class="quality-picker" hidden>
+    <strong id="qualityTitle">Choose quality</strong>
+    <span id="qualitySummary" class="quality-summary"></span>
+    <select id="qualitySelect" aria-label="Media quality"></select>
+    <button id="toggleAdvancedFormats" class="quality-advanced" type="button" hidden>Show video-only and audio formats</button>
+    <button id="downloadQuality" type="button">Download selected quality</button>
+  </div>
+
+  <div class="section-title">
+    <span>Links and media</span>
+    <span id="count">0 selected</span>
+  </div>
+  <div class="selection-actions">
+    <button id="selectAll" class="text-button" type="button">Select all</button>
+    <button id="selectNone" class="text-button" type="button">Clear</button>
+  </div>
+
+  <main id="items"></main>
+
+  <div class="setting">
+    <div>
+      <strong>In-page PIDM controls</strong>
+      <span>Show a labeled download button when media or files are detected</span>
+    </div>
+    <label class="switch" aria-label="Show in-page PIDM controls">
+      <input id="showPageControls" type="checkbox">
+      <span></span>
+    </label>
+  </div>
+
+  <div class="setting">
+    <div>
+      <strong>Capture browser downloads</strong>
+      <span>Send new browser downloads to PIDM and cancel the browser transfer</span>
+    </div>
+    <label class="switch" aria-label="Capture browser downloads">
+      <input id="captureBrowserDownloads" type="checkbox">
+      <span></span>
+    </label>
+  </div>
+
+  <footer>
+    <span id="status">PIDM must be running</span>
+    <button id="sendBatch" type="button" disabled>Review in PIDM</button>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
