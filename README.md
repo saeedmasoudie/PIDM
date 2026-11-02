@@ -5,6 +5,15 @@ and Qt Quick. It combines a native queue-based interface with resumable
 downloads, segmented transfers, media extraction, torrent support, scheduling,
 and optional browser integration.
 
+## Download
+
+You can always grab the latest version of the app from the **[GitHub Releases](../../releases/latest)** page.  
+Choose the package that matches your operating system:
+
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-blue?logo=windows)](../../releases/latest)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS-lightgrey?logo=apple)](../../releases/latest)
+[![Download for Linux](https://img.shields.io/badge/Download-Linux-green?logo=linux)](../../releases/latest)
+
 ## Highlights
 
 - Pause, resume, retry, and recover HTTP and HTTPS downloads
@@ -20,6 +29,10 @@ and optional browser integration.
 - Choose light, dark, or system themes
 - Use the interface in English, Persian, Russian, or Chinese
 - Send links and detected media from Chromium-based browsers or Firefox
+
+## Screenshots
+
+![PIDM Dark Mode](Screenshots/Screenshot.jpg)
 
 ## Supported platforms
 
