@@ -395,133 +395,109 @@ jobs:
             | sed -E 's#  artifacts/[^/]+/#  #' \
             > SHA256SUMS.txt
 
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            CHANGE_DETAILS="$(
+              git log --no-merges --format='%b' \
+                "${PREVIOUS_TAG}..HEAD"
+            )"
+          else
+            CHANGE_DETAILS="$(
+              git log --no-merges --format='%b' -n 50
+            )"
+          fi
+          CHANGE_DETAILS="$(
+            printf '%s\n' "$CHANGE_DETAILS" \
+              | sed \
+                  -e '/^Figma-Prompt-ID:/d' \
+                  -e '/^Figma-Session-ID:/d' \
+                  -e '/^[[:space:]]*$/d' \
+                  -E -e 's/^[[:space:]]*[-*]?[[:space:]]*/- /'
+          )"
+
           {
             echo "# PIDM ${TAG}"
             echo
+            echo "## Changes"
+            echo
+            if [[ -n "$CHANGE_DETAILS" ]]; then
+              printf '%s\n' "$CHANGE_DETAILS"
+            else
+              echo "- No detailed change descriptions were provided."
+            fi
+            echo
             echo "## Downloads"
             echo
-            echo "> **Recommended for Windows:** choose the Setup installer. It includes"
-            echo "> shortcuts, an uninstaller, and an optional Start with Windows component."
-            echo
-            echo "| Platform | Architecture | Download | Recommended use | Size |"
-            echo "| :--- | :---: | :--- | :--- | ---: |"
+            echo "| Platform | Package | Size | Download |"
+            echo "| :--- | :--- | ---: | :---: |"
             find artifacts -type f | sort | while read -r file; do
               name="$(basename "$file")"
               case "$name" in
                 *Windows*x64*Setup.exe)
-                  platform="Windows"
-                  arch="x64"
-                  package="**Setup EXE**"
-                  use="Recommended for most Windows users"
+                  platform="Windows x64"
+                  package="Setup EXE"
+                  label="Windows Setup"
+                  badge="https://img.shields.io/badge/Download-Windows_Setup-0078D4?style=for-the-badge&logo=windows11&logoColor=white"
                   ;;
                 *Windows*x64*Portable.zip)
-                  platform="Windows"
-                  arch="x64"
+                  platform="Windows x64"
                   package="Portable ZIP"
-                  use="No installation; keep the entire extracted folder together"
+                  label="Windows Portable"
+                  badge="https://img.shields.io/badge/Download-Windows_Portable-0078D4?style=for-the-badge&logo=windows11&logoColor=white"
                   ;;
                 *Linux*x64.deb)
-                  platform="Linux"
-                  arch="x64"
-                  package="**DEB installer**"
-                  use="Recommended for Debian and Ubuntu"
+                  platform="Linux x64"
+                  package="DEB installer"
+                  label="Linux DEB"
+                  badge="https://img.shields.io/badge/Download-Linux_DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black"
                   ;;
                 *Linux*x64*Portable.tar.gz)
-                  platform="Linux"
-                  arch="x64"
+                  platform="Linux x64"
                   package="Portable TAR.GZ"
-                  use="Other x64 Linux distributions"
+                  label="Linux Portable"
+                  badge="https://img.shields.io/badge/Download-Linux_Portable-FCC624?style=for-the-badge&logo=linux&logoColor=black"
                   ;;
                 *macOS*x64.dmg)
                   platform="macOS"
-                  arch="Intel"
-                  package="DMG"
-                  use="Intel-based Macs"
+                  package="Intel DMG"
+                  label="macOS Intel"
+                  badge="https://img.shields.io/badge/Download-macOS_Intel-111111?style=for-the-badge&logo=apple&logoColor=white"
                   ;;
                 *macOS*arm64.dmg)
                   platform="macOS"
-                  arch="Apple Silicon"
-                  package="DMG"
-                  use="M1, M2, M3, and newer Macs"
+                  package="Apple Silicon DMG"
+                  label="macOS Apple Silicon"
+                  badge="https://img.shields.io/badge/Download-Apple_Silicon-111111?style=for-the-badge&logo=apple&logoColor=white"
                   ;;
                 *chromium*.zip)
-                  platform="Browser extension"
-                  arch="Chromium"
-                  package="ZIP"
-                  use="Chrome, Edge, Brave, Opera, and Vivaldi"
+                  platform="Extension"
+                  package="Chromium ZIP"
+                  label="Chromium Extension"
+                  badge="https://img.shields.io/badge/Download-Chromium_Extension-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white"
                   ;;
                 *firefox*.zip)
-                  platform="Browser extension"
-                  arch="Firefox"
-                  package="ZIP"
-                  use="Temporary manual installation for testing"
+                  platform="Extension"
+                  package="Firefox ZIP"
+                  label="Firefox Extension"
+                  badge="https://img.shields.io/badge/Download-Firefox_Extension-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white"
                   ;;
                 *)
                   continue
                   ;;
               esac
               size="$(du -h "$file" | cut -f1)"
-              echo "| **${platform}** | ${arch} | [${package}](${RELEASE_URL}/${name}) | ${use} | ${size} |"
+              echo "| **${platform}** | ${package} | ${size} | [![${label}](${badge})](${RELEASE_URL}/${name}) |"
             done
             echo
-            echo "### Portable package note"
-            echo
-            echo "The Windows portable package intentionally contains \`PIDM.exe\` and an"
-            echo "\`_internal\` folder. This is the standard reliable PyInstaller layout."
-            echo "Extract the complete \`PIDM\` folder and keep both together; moving only"
-            echo "\`PIDM.exe\` will prevent the application from starting."
-            echo
-            echo "## Browser extension installation"
-            echo
-            echo "Browser-store publishing is not required for manual installation."
-            echo "PIDM must be running while the extension is used."
-            echo
-            echo "### Chrome, Edge, Brave, Opera, and Vivaldi"
-            echo
-            echo "1. Download and extract the Chromium extension ZIP."
-            echo "2. Open the browser's extensions page."
-            echo "3. Enable **Developer mode**."
-            echo "4. Choose **Load unpacked** and select the extracted extension folder."
-            echo "5. Keep that folder on disk while the extension is installed."
-            echo
-            echo "### Firefox"
-            echo
-            echo "1. Download and extract the Firefox extension ZIP."
-            echo "2. Open \`about:debugging#/runtime/this-firefox\`."
-            echo "3. Choose **Load Temporary Add-on**."
-            echo "4. Select \`manifest.json\` from the extracted folder."
-            echo
-            echo "> Firefox removes temporary add-ons when the browser closes. Permanent"
-            echo "> installation in standard Firefox requires Mozilla signing. Firefox"
-            echo "> Developer Edition and Nightly can be configured for unsigned testing."
-            echo
-            echo "## Changes"
-            echo
-            if [[ -n "$PREVIOUS_TAG" ]]; then
-              git log --no-merges \
-                --format='### %s (`%h`)%n%n%b%n' \
-                "${PREVIOUS_TAG}..HEAD" \
-                | sed \
-                    -e '/^Figma-Prompt-ID:/d' \
-                    -e '/^Figma-Session-ID:/d'
-              echo
-              echo "[Compare ${PREVIOUS_TAG}...${TAG}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG})"
-            else
-              git log --no-merges \
-                --format='### %s (`%h`)%n%n%b%n' \
-                -n 50 \
-                | sed \
-                    -e '/^Figma-Prompt-ID:/d' \
-                    -e '/^Figma-Session-ID:/d'
-            fi
+            echo "> **Extensions:** Extract the ZIP first. In Chromium browsers use"
+            echo "> **Extensions → Developer mode → Load unpacked**. In Firefox use"
+            echo "> \`about:debugging#/runtime/this-firefox\` → **Load Temporary Add-on**."
+            echo "> PIDM must be running; temporary Firefox add-ons are removed on restart."
             echo
             echo "## SHA-256 checksums"
             echo
             echo '```text'
             cat SHA256SUMS.txt
             echo '```'
-            echo
-            echo "Build provenance is attached through GitHub artifact attestations."
           } > RELEASE_NOTES.md
 
       - name: Attest release artifacts
