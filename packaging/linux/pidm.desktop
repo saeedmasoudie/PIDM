@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=PIDM
+Comment=Download files, media, and torrents
+Exec=/opt/pidm/PIDM
+Icon=pidm
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true
+StartupWMClass=PIDM

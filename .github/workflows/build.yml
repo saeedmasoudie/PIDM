@@ -1,39 +1,149 @@
-name: Build PIDM
+name: Release PIDM installers
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+
+run-name: Build PIDM installers and publish release
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: pidm-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  desktop:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-latest
-            artifact: PIDM-windows-x64
-          - name: Linux
-            os: ubuntu-latest
-            artifact: PIDM-linux-x64
-          - name: macOS
-            os: macos-latest
-            artifact: PIDM-macos
-    runs-on: ${{ matrix.os }}
-
+  validate:
+    name: Validate release
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.release.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Read application version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(
+            python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          tree = ast.parse(Path("core/build_info.py").read_text(encoding="utf-8"))
+          for node in tree.body:
+              if not isinstance(node, ast.Assign):
+                  continue
+              if not any(
+                  isinstance(target, ast.Name) and target.id == "APP_VERSION"
+                  for target in node.targets
+              ):
+                  continue
+              if isinstance(node.value, ast.Constant):
+                  print(str(node.value.value))
+                  break
+          else:
+              raise SystemExit("APP_VERSION was not found in core/build_info.py")
+          PY
+          )"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid APP_VERSION: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building PIDM $VERSION"
+
+      - name: Check whether release exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
+            --silent 2>/dev/null; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "PIDM v${VERSION} is already published."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "PIDM v${VERSION} will be built and published."
+          fi
+
+      - name: Validate Python and translations
+        run: |
+          python -m compileall -q controllers core models scripts main.py pidm.spec
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          catalogs = {
+              path.stem: json.loads(path.read_text(encoding="utf-8"))
+              for path in Path("translations").glob("*.json")
+          }
+          english = set(catalogs["en"])
+          for language, catalog in catalogs.items():
+              if set(catalog) != english:
+                  missing = sorted(english - set(catalog))
+                  extra = sorted(set(catalog) - english)
+                  raise SystemExit(
+                      f"{language}: missing={missing}, extra={extra}"
+                  )
+
+          used = set()
+          pattern = re.compile(r'(?:translate|\btr)\(\s*["\']([^"\']+)')
+          for path in Path("qml").rglob("*.qml"):
+              used.update(pattern.findall(path.read_text(encoding="utf-8")))
+          missing = sorted(used - english)
+          if missing:
+              raise SystemExit(
+                  "Missing English translation keys: " + ", ".join(missing)
+              )
+          print(
+              f"Validated {len(catalogs)} catalogs with "
+              f"{len(english)} keys."
+          )
+          PY
+
+      - name: Validate extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in extension/*.js; do
+            node --check "$file"
+          done
+          python extension/package.py --output extension-check
+          for archive in extension-check/*.zip; do
+            unzip -t "$archive" >/dev/null
+          done
+
+  windows:
+    name: Windows x64
+    needs: validate
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PIDM_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install build dependencies
         run: |
@@ -43,69 +153,342 @@ jobs:
       - name: Embed release information
         run: python scripts/write_build_info.py
 
-      - name: Prepare application logo
-        shell: bash
+      - name: Build application
+        run: pyinstaller --clean --noconfirm pidm.spec
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Build portable archive and installer
+        shell: pwsh
         run: |
-          if [ ! -f assets/logo.png ]; then
-            cp extension/logo.png assets/logo.png
-          fi
+          New-Item -ItemType Directory -Force release, build\installer | Out-Null
+          python -c "from PIL import Image; image=Image.open('assets/logo.png'); image.save('build/installer/PIDM.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+          $portable = "release/PIDM-$env:VERSION-Windows-x64-Portable.zip"
+          Compress-Archive -Path "dist/PIDM" -DestinationPath $portable
+          $source = (Resolve-Path "dist/PIDM").Path
+          $output = (Resolve-Path "release").Path + "\PIDM-$env:VERSION-Windows-x64-Setup.exe"
+          $icon = (Resolve-Path "build/installer/PIDM.ico").Path
+          $productVersion = (($env:VERSION -split "[-+]")[0]) + ".0"
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          & $makensis `
+            "/DVERSION=$env:VERSION" `
+            "/DPRODUCT_VERSION=$productVersion" `
+            "/DSOURCE_DIR=$source" `
+            "/DOUT_FILE=$output" `
+            "/DICON_FILE=$icon" `
+            "packaging/windows/PIDM.nsi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pidm-windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux x64
+    needs: validate
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PIDM_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon0 \
+            libxcb-cursor0
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pillow
+
+      - name: Embed release information
+        run: python scripts/write_build_info.py
 
       - name: Build application
         run: pyinstaller --clean --noconfirm pidm.spec
 
-      - name: Package Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force release | Out-Null
-          Compress-Archive -Path dist/PIDM -DestinationPath release/${{ matrix.artifact }}.zip
-
-      - name: Package Linux
-        if: runner.os == 'Linux'
+      - name: Build portable archive and Debian package
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release
-          tar -C dist -czf release/${{ matrix.artifact }}.tar.gz PIDM
+          tar -C dist -czf \
+            "release/PIDM-${VERSION}-Linux-x64-Portable.tar.gz" PIDM
 
-      - name: Package macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          mkdir -p release
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/PIDM.app release/${{ matrix.artifact }}.zip
+          PACKAGE_ROOT="build/debian/pidm"
+          install -d \
+            "${PACKAGE_ROOT}/DEBIAN" \
+            "${PACKAGE_ROOT}/opt/pidm" \
+            "${PACKAGE_ROOT}/usr/share/applications" \
+            "${PACKAGE_ROOT}/usr/share/icons/hicolor/256x256/apps"
+          cp -a dist/PIDM/. "${PACKAGE_ROOT}/opt/pidm/"
+          install -m 644 packaging/linux/pidm.desktop \
+            "${PACKAGE_ROOT}/usr/share/applications/pidm.desktop"
+          install -m 644 assets/logo.png \
+            "${PACKAGE_ROOT}/usr/share/icons/hicolor/256x256/apps/pidm.png"
+          INSTALLED_SIZE="$(du -sk "${PACKAGE_ROOT}/opt/pidm" | cut -f1)"
+          cat > "${PACKAGE_ROOT}/DEBIAN/control" <<EOF
+          Package: pidm
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: ${INSTALLED_SIZE}
+          Maintainer: Saeed Masoudi
+          Depends: libc6, libegl1, libgl1, libxkbcommon0, libxcb-cursor0
+          Homepage: https://github.com/saeedmasoudie/PIDM
+          Description: Cross-platform desktop download manager
+           PIDM provides resumable and segmented downloads, queues, schedules,
+           media extraction, torrent support, and browser integration.
+          EOF
+          dpkg-deb --build --root-owner-group \
+            "${PACKAGE_ROOT}" \
+            "release/PIDM-${VERSION}-Linux-x64.deb"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: pidm-linux-x64
           path: release/*
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Attach desktop build to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release/*
-          generate_release_notes: true
-
-  extensions:
-    name: Browser extensions
-    runs-on: ubuntu-latest
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: validate
+    if: needs.validate.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      PIDM_RELEASE_VERSION: ${{ needs.validate.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Package extensions
-        run: python extension/package.py --output release
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pillow
+
+      - name: Embed release information
+        run: python scripts/write_build_info.py
+
+      - name: Build application
+        run: pyinstaller --clean --noconfirm pidm.spec
+
+      - name: Apply ad-hoc application signature
+        run: |
+          codesign --force --deep --sign - dist/PIDM.app
+          codesign --verify --deep --strict dist/PIDM.app
+
+      - name: Build disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          hdiutil create \
+            -volname "PIDM ${VERSION}" \
+            -srcfolder dist/PIDM.app \
+            -format UDZO \
+            -ov \
+            -o "release/PIDM-${VERSION}-macOS-${{ matrix.arch }}.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: PIDM-browser-extensions
-          path: release/*.zip
+          name: pidm-macos-${{ matrix.arch }}
+          path: release/*
           if-no-files-found: error
-      - name: Attach extensions to release
-        if: startsWith(github.ref, 'refs/tags/v')
+          retention-days: 14
+
+  extensions:
+    name: Browser extensions
+    needs: validate
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Package extensions
+        run: python extension/package.py --output release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pidm-browser-extensions
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - windows
+      - linux
+      - macos
+      - extensions
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release page and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          PREVIOUS_TAG="$(
+            git tag --list --sort=-version:refname \
+              | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+' \
+              | grep -Fvx "${TAG}" \
+              | head -n 1 \
+              || true
+          )"
+
+          find artifacts -type f -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            | sed -E 's#  artifacts/[^/]+/#  #' \
+            > SHA256SUMS.txt
+
+          {
+            echo "# PIDM ${TAG}"
+            echo
+            echo "## Downloads"
+            echo
+            echo "| Platform | Architecture | Package | Size |"
+            echo "| :--- | :---: | :--- | ---: |"
+            find artifacts -type f | sort | while read -r file; do
+              name="$(basename "$file")"
+              case "$name" in
+                *Windows*x64*Setup.exe)
+                  platform="Windows"
+                  arch="x64"
+                  package="Installer"
+                  ;;
+                *Windows*x64*Portable.zip)
+                  platform="Windows"
+                  arch="x64"
+                  package="Portable ZIP"
+                  ;;
+                *Linux*x64.deb)
+                  platform="Linux"
+                  arch="x64"
+                  package="DEB installer"
+                  ;;
+                *Linux*x64*Portable.tar.gz)
+                  platform="Linux"
+                  arch="x64"
+                  package="Portable TAR.GZ"
+                  ;;
+                *macOS*x64.dmg)
+                  platform="macOS"
+                  arch="Intel"
+                  package="DMG"
+                  ;;
+                *macOS*arm64.dmg)
+                  platform="macOS"
+                  arch="Apple Silicon"
+                  package="DMG"
+                  ;;
+                *chromium*.zip)
+                  platform="Browser extension"
+                  arch="Chromium"
+                  package="ZIP"
+                  ;;
+                *firefox*.zip)
+                  platform="Browser extension"
+                  arch="Firefox"
+                  package="ZIP"
+                  ;;
+                *)
+                  continue
+                  ;;
+              esac
+              size="$(du -h "$file" | cut -f1)"
+              echo "| ${platform} | ${arch} | [${package}](${RELEASE_URL}/${name}) | ${size} |"
+            done
+            echo
+            echo "## Changes"
+            echo
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              git log --no-merges --format='- %s (%h)' \
+                "${PREVIOUS_TAG}..HEAD"
+              echo
+              echo "[Compare ${PREVIOUS_TAG}...${TAG}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG})"
+            else
+              git log --no-merges --format='- %s (%h)' -n 50
+            fi
+            echo
+            echo "## SHA-256 checksums"
+            echo
+            echo '```text'
+            cat SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "Build provenance is attached through GitHub artifact attestations."
+          } > RELEASE_NOTES.md
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifacts/**/*
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.zip
-          generate_release_notes: true
+          tag_name: v${{ needs.validate.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: PIDM v${{ needs.validate.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/*
+            SHA256SUMS.txt

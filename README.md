@@ -113,10 +113,37 @@ python -m PyInstaller --clean --noconfirm pidm.spec
 The application bundle is written to `dist/`. The checked-in production logo
 is used for the desktop application and packaged browser extensions.
 
-Pushing a tag whose name starts with `v`, such as `v2.0.0`, runs the
-[build workflow](.github/workflows/build.yml). It builds desktop artifacts and
-browser extension archives, then attaches them to the matching GitHub release.
-The workflow can also be started manually.
+The [release workflow](.github/workflows/build.yml) is started with one button
+from the GitHub **Actions** page. It reads `APP_VERSION` from
+`core/build_info.py` and does nothing when that version already has a GitHub
+release. For a new version it automatically:
+
+- validates Python, translations, JavaScript, and extension packages;
+- builds a Windows installer and portable ZIP;
+- builds a Linux DEB installer and portable TAR.GZ;
+- builds Intel and Apple Silicon macOS DMGs;
+- packages Chromium and Firefox extensions;
+- creates the `v<version>` tag and GitHub release;
+- adds direct download links, commit changes, SHA-256 checksums, and GitHub
+  build-provenance attestations to the release.
+
+To publish the current version:
+
+1. Open the repository's **Actions** tab.
+2. Select **Release PIDM installers**.
+3. Choose **Run workflow**, select `main`, and confirm **Run workflow**.
+4. Wait for the **Publish GitHub release** job to finish.
+5. Open the repository's **Releases** page to download the installers and
+   browser extensions.
+
+To publish a later version, update `APP_VERSION` in `core/build_info.py`, push
+to `main`, and run the same workflow. No workflow, tag, release page,
+download-link, checksum, or change-log editing is required.
+
+Checksums and GitHub attestations verify that release files came from this
+repository and workflow. Windows publisher signing and Apple notarization
+still require external identity certificates; GitHub Actions alone cannot
+provide an operating-system-trusted publisher identity.
 
 ## Development checks
 
