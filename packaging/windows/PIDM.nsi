@@ -19,6 +19,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Saeed Masoudi"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -26,7 +27,9 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Saeed Masoudi"
 !insertmacro MUI_LANGUAGE "English"
 
 Section "PIDM" MainSection
+  SectionIn RO
   SetShellVarContext current
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "PIDM"
   RMDir /r "$INSTDIR"
   SetOutPath "$INSTDIR"
   File /r "${SOURCE_DIR}\*"
@@ -49,6 +52,10 @@ Section "PIDM" MainSection
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PIDM" "NoRepair" 1
 SectionEnd
 
+Section /o "Start PIDM with Windows" StartupSection
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "PIDM" '"$INSTDIR\PIDM.exe"'
+SectionEnd
+
 Section "Uninstall"
   SetShellVarContext current
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "PIDM"
@@ -58,3 +65,11 @@ Section "Uninstall"
   RMDir /r "$SMPROGRAMS\PIDM"
   RMDir /r "$INSTDIR"
 SectionEnd
+
+LangString MainDescription ${LANG_ENGLISH} "Install PIDM, Start menu shortcuts, a desktop shortcut, and an uninstaller."
+LangString StartupDescription ${LANG_ENGLISH} "Launch PIDM automatically after you sign in to Windows. This can also be changed later in PIDM settings."
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${MainSection} $(MainDescription)
+  !insertmacro MUI_DESCRIPTION_TEXT ${StartupSection} $(StartupDescription)
+!insertmacro MUI_FUNCTION_DESCRIPTION_END

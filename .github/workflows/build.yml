@@ -71,12 +71,11 @@ jobs:
           if gh api \
             "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
             --silent 2>/dev/null; then
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "PIDM v${VERSION} is already published."
+            echo "PIDM v${VERSION} will be rebuilt and replaced."
           else
-            echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "PIDM v${VERSION} will be built and published."
           fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate Python and translations
         run: |
@@ -401,68 +400,119 @@ jobs:
             echo
             echo "## Downloads"
             echo
-            echo "| Platform | Architecture | Package | Size |"
-            echo "| :--- | :---: | :--- | ---: |"
+            echo "> **Recommended for Windows:** choose the Setup installer. It includes"
+            echo "> shortcuts, an uninstaller, and an optional Start with Windows component."
+            echo
+            echo "| Platform | Architecture | Download | Recommended use | Size |"
+            echo "| :--- | :---: | :--- | :--- | ---: |"
             find artifacts -type f | sort | while read -r file; do
               name="$(basename "$file")"
               case "$name" in
                 *Windows*x64*Setup.exe)
                   platform="Windows"
                   arch="x64"
-                  package="Installer"
+                  package="**Setup EXE**"
+                  use="Recommended for most Windows users"
                   ;;
                 *Windows*x64*Portable.zip)
                   platform="Windows"
                   arch="x64"
                   package="Portable ZIP"
+                  use="No installation; keep the entire extracted folder together"
                   ;;
                 *Linux*x64.deb)
                   platform="Linux"
                   arch="x64"
-                  package="DEB installer"
+                  package="**DEB installer**"
+                  use="Recommended for Debian and Ubuntu"
                   ;;
                 *Linux*x64*Portable.tar.gz)
                   platform="Linux"
                   arch="x64"
                   package="Portable TAR.GZ"
+                  use="Other x64 Linux distributions"
                   ;;
                 *macOS*x64.dmg)
                   platform="macOS"
                   arch="Intel"
                   package="DMG"
+                  use="Intel-based Macs"
                   ;;
                 *macOS*arm64.dmg)
                   platform="macOS"
                   arch="Apple Silicon"
                   package="DMG"
+                  use="M1, M2, M3, and newer Macs"
                   ;;
                 *chromium*.zip)
                   platform="Browser extension"
                   arch="Chromium"
                   package="ZIP"
+                  use="Chrome, Edge, Brave, Opera, and Vivaldi"
                   ;;
                 *firefox*.zip)
                   platform="Browser extension"
                   arch="Firefox"
                   package="ZIP"
+                  use="Temporary manual installation for testing"
                   ;;
                 *)
                   continue
                   ;;
               esac
               size="$(du -h "$file" | cut -f1)"
-              echo "| ${platform} | ${arch} | [${package}](${RELEASE_URL}/${name}) | ${size} |"
+              echo "| **${platform}** | ${arch} | [${package}](${RELEASE_URL}/${name}) | ${use} | ${size} |"
             done
+            echo
+            echo "### Portable package note"
+            echo
+            echo "The Windows portable package intentionally contains \`PIDM.exe\` and an"
+            echo "\`_internal\` folder. This is the standard reliable PyInstaller layout."
+            echo "Extract the complete \`PIDM\` folder and keep both together; moving only"
+            echo "\`PIDM.exe\` will prevent the application from starting."
+            echo
+            echo "## Browser extension installation"
+            echo
+            echo "Browser-store publishing is not required for manual installation."
+            echo "PIDM must be running while the extension is used."
+            echo
+            echo "### Chrome, Edge, Brave, Opera, and Vivaldi"
+            echo
+            echo "1. Download and extract the Chromium extension ZIP."
+            echo "2. Open the browser's extensions page."
+            echo "3. Enable **Developer mode**."
+            echo "4. Choose **Load unpacked** and select the extracted extension folder."
+            echo "5. Keep that folder on disk while the extension is installed."
+            echo
+            echo "### Firefox"
+            echo
+            echo "1. Download and extract the Firefox extension ZIP."
+            echo "2. Open \`about:debugging#/runtime/this-firefox\`."
+            echo "3. Choose **Load Temporary Add-on**."
+            echo "4. Select \`manifest.json\` from the extracted folder."
+            echo
+            echo "> Firefox removes temporary add-ons when the browser closes. Permanent"
+            echo "> installation in standard Firefox requires Mozilla signing. Firefox"
+            echo "> Developer Edition and Nightly can be configured for unsigned testing."
             echo
             echo "## Changes"
             echo
             if [[ -n "$PREVIOUS_TAG" ]]; then
-              git log --no-merges --format='- %s (%h)' \
-                "${PREVIOUS_TAG}..HEAD"
+              git log --no-merges \
+                --format='### %s (`%h`)%n%n%b%n' \
+                "${PREVIOUS_TAG}..HEAD" \
+                | sed \
+                    -e '/^Figma-Prompt-ID:/d' \
+                    -e '/^Figma-Session-ID:/d'
               echo
               echo "[Compare ${PREVIOUS_TAG}...${TAG}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG})"
             else
-              git log --no-merges --format='- %s (%h)' -n 50
+              git log --no-merges \
+                --format='### %s (`%h`)%n%n%b%n' \
+                -n 50 \
+                | sed \
+                    -e '/^Figma-Prompt-ID:/d' \
+                    -e '/^Figma-Session-ID:/d'
             fi
             echo
             echo "## SHA-256 checksums"
@@ -479,6 +529,14 @@ jobs:
         with:
           subject-path: artifacts/**/*
 
+      - name: Update release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          git tag --force "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/${TAG}" --force
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -488,7 +546,27 @@ jobs:
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: ${{ contains(needs.validate.outputs.version, '-') }}
+          overwrite_files: true
           fail_on_unmatched_files: true
           files: |
             artifacts/**/*
             SHA256SUMS.txt
+
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          {
+            find artifacts -type f -printf '%f\n'
+            echo "SHA256SUMS.txt"
+          } | sort -u > expected-assets.txt
+          gh release view "$TAG" --json assets --jq '.assets[].name' \
+            | while read -r asset; do
+                [[ -n "$asset" ]] || continue
+                if ! grep -Fxq "$asset" expected-assets.txt; then
+                  gh release delete-asset "$TAG" "$asset" --yes
+                fi
+              done

@@ -29,6 +29,21 @@ batches to the PIDM desktop app over a loopback-only bridge at
 3. Open `about:debugging` → **This Firefox** → **Load Temporary Add-on**.
 4. Select the temporary `manifest.json`.
 
+Temporary Firefox add-ons are removed when Firefox closes. Permanent
+installation in standard Firefox requires Mozilla signing. Firefox Developer
+Edition and Nightly can be configured for unsigned extension testing.
+
+### Release downloads
+
+The GitHub release page includes separate Chromium and Firefox ZIP files.
+Extract the archive before loading it:
+
+- Chromium browsers: enable developer mode and choose **Load unpacked**.
+- Firefox: open `about:debugging#/runtime/this-firefox`, choose
+  **Load Temporary Add-on**, and select `manifest.json`.
+
+PIDM must be running before the extension can submit or capture downloads.
+
 ## Package ZIP files
 
 From the repository root:
